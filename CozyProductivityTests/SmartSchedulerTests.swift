@@ -1,3 +1,4 @@
+import EventKit
 import SwiftData
 import XCTest
 @testable import CozyProductivity
@@ -1598,6 +1599,1009 @@ final class SmartSchedulerTests: XCTestCase {
         XCTAssertEqual(archivedSnapshot.totalGoldDays, fullSnapshot.totalGoldDays)
     }
 
+    // MARK: - Review Round 2 Regression Suite (Findings 1–7)
+
+    func testGoogleBusyReadFailureDefersSlotWritesWhilePreservingCompletionAndFreshIntervalCache() async throws {
+        let today = makeDate(year: 2026, month: 11, day: 14) // Saturday
+        let refNow = today.addingTimeInterval(10 * 3600)
+
+        let prefs = CozyPreferences(
+            useGoogleCalendarSync: true,
+            pushTasksToGoogleCalendar: true,
+            autoSyncCalendarChanges: true,
+            googleSyncMode: .oauthREST,
+            googleClientID: "123456-test.apps.googleusercontent.com",
+            googleCalendarID: "primary",
+            googleTaskPushStartHour: 18
+        )
+        context.insert(prefs)
+
+        let syncedTemplate = TaskTemplate(
+            title: "Water ferns",
+            emoji: "🌿",
+            recurrence: .once,
+            durationMinutes: 30,
+            isAutoScheduled: false,
+            anchorDate: today,
+            calendar: testCalendar
+        )
+        let newTemplate = TaskTemplate(
+            title: "Tidy desk",
+            emoji: "🗂️",
+            recurrence: .once,
+            durationMinutes: 30,
+            isAutoScheduled: false,
+            anchorDate: today,
+            calendar: testCalendar
+        )
+        context.insert(syncedTemplate)
+        context.insert(newTemplate)
+
+        let existingStart = today.addingTimeInterval(19.5 * 3600) // 19:30 UTC (after an unseen 18:00-19:00 meeting)
+        let existingEnd = today.addingTimeInterval(20.0 * 3600)   // 20:00 UTC
+
+        let syncedOcc = TaskOccurrence(
+            scheduledDate: today,
+            periodKey: "once:\(syncedTemplate.id.uuidString)",
+            status: .completed,
+            completedAt: refNow,
+            template: syncedTemplate,
+            calendar: testCalendar
+        )
+        let destKey = GoogleCalendarService.makeGoogleDestinationKey(accountKey: "alex@gmail.com", calendarID: "primary")
+        let syncedRemoteID = GoogleCalendarService.deterministicGoogleEventID(occurrenceID: syncedOcc.id, destinationKey: destKey)
+        syncedOcc.googleCalendarEventId = syncedRemoteID
+        syncedOcc.googleSyncedDestination = destKey
+
+        let newUnsyncedOcc = TaskOccurrence(
+            scheduledDate: today,
+            periodKey: "once:\(newTemplate.id.uuidString)",
+            status: .pending,
+            template: newTemplate,
+            calendar: testCalendar
+        )
+        context.insert(syncedOcc)
+        context.insert(newUnsyncedOcc)
+        try context.save()
+
+        var failBusyRead = true
+        var patchedPayloads: [GoogleUpsertEventPayload] = []
+        var createdPayloads: [GoogleUpsertEventPayload] = []
+        var remoteCozyEvents: [String: GoogleEventDTO] = [
+            syncedRemoteID: GoogleEventDTO(
+                id: syncedRemoteID,
+                status: "confirmed",
+                summary: "🌿 Water ferns",
+                description: "Scheduled by Cozy \(CalendarFreeTimeService.formatCozyMetadataTag(channel: .googleOAuth, occurrenceID: syncedOcc.id))",
+                transparency: "opaque",
+                start: GoogleEventDateTimeDTO(dateTime: GoogleCalendarService.formatRFC3339(existingStart), date: nil, timeZone: "UTC"),
+                end: GoogleEventDateTimeDTO(dateTime: GoogleCalendarService.formatRFC3339(existingEnd), date: nil, timeZone: "UTC"),
+                extendedProperties: GoogleExtendedPropertiesDTO(privateProperties: [
+                    "cozyApp": "CozyProductivity",
+                    "cozyChannel": "google-oauth",
+                    "cozyTaskOccurrenceId": syncedOcc.id.uuidString
+                ])
+            )
+        ]
+
+        let meetingStart = today.addingTimeInterval(18 * 3600) // 18:00 UTC
+        let meetingEnd = today.addingTimeInterval(19 * 3600)   // 19:00 UTC
+        let meetingItem = GoogleEventDTO(
+            id: "ext-meeting-1",
+            status: "confirmed",
+            summary: "Team Sync",
+            description: "External meeting",
+            transparency: "opaque",
+            start: GoogleEventDateTimeDTO(dateTime: GoogleCalendarService.formatRFC3339(meetingStart), date: nil, timeZone: "UTC"),
+            end: GoogleEventDateTimeDTO(dateTime: GoogleCalendarService.formatRFC3339(meetingEnd), date: nil, timeZone: "UTC"),
+            extendedProperties: nil
+        )
+
+        let mockBacking = MockEventStoreBacking()
+        let ekService = CalendarFreeTimeService(backing: mockBacking)
+        let testToken = GoogleOAuthToken(
+            accessToken: "mock-access-token",
+            refreshToken: "mock-refresh",
+            expiresAt: Date().addingTimeInterval(86400),
+            accountSummary: "alex@gmail.com",
+            accountKey: "alex@gmail.com"
+        )
+
+        let googleService = GoogleCalendarService(
+            httpLoader: { req in
+                let url = try XCTUnwrap(req.url)
+                let method = req.httpMethod ?? "GET"
+                let query = url.query ?? ""
+
+                if method == "GET" {
+                    if query.contains("privateExtendedProperty") {
+                        let body = try JSONEncoder().encode(GoogleEventListResponse(items: Array(remoteCozyEvents.values), nextPageToken: nil))
+                        return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                    }
+                    if failBusyRead {
+                        return (Data("Service Unavailable".utf8), HTTPURLResponse(url: url, statusCode: 503, httpVersion: nil, headerFields: nil)!)
+                    }
+                    var allItems = Array(remoteCozyEvents.values)
+                    allItems.append(meetingItem)
+                    let body = try JSONEncoder().encode(GoogleEventListResponse(items: allItems, nextPageToken: nil))
+                    return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                }
+
+                if method == "PATCH" {
+                    let payload = try JSONDecoder().decode(GoogleUpsertEventPayload.self, from: req.httpBody ?? Data())
+                    patchedPayloads.append(payload)
+                    let eventID = url.lastPathComponent
+                    let updated = GoogleEventDTO(
+                        id: eventID,
+                        status: "confirmed",
+                        summary: payload.summary,
+                        description: payload.description,
+                        transparency: "opaque",
+                        start: payload.start,
+                        end: payload.end,
+                        extendedProperties: payload.extendedProperties
+                    )
+                    remoteCozyEvents[eventID] = updated
+                    let body = try JSONEncoder().encode(updated)
+                    return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                }
+
+                if method == "POST" {
+                    let payload = try JSONDecoder().decode(GoogleUpsertEventPayload.self, from: req.httpBody ?? Data())
+                    createdPayloads.append(payload)
+                    let createdID = payload.id ?? UUID().uuidString
+                    let created = GoogleEventDTO(
+                        id: createdID,
+                        status: "confirmed",
+                        summary: payload.summary,
+                        description: payload.description,
+                        transparency: "opaque",
+                        start: payload.start,
+                        end: payload.end,
+                        extendedProperties: payload.extendedProperties
+                    )
+                    remoteCozyEvents[createdID] = created
+                    let body = try JSONEncoder().encode(created)
+                    return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                }
+
+                return (Data(), HTTPURLResponse(url: url, statusCode: 204, httpVersion: nil, headerFields: nil)!)
+            },
+            initialToken: testToken,
+            freeTimeService: ekService,
+            persistTokensToKeychain: false
+        )
+
+        // Part A: Busy read fails (503) with NO cached snapshot -> new slot write is DEFERRED (never placed over 18:00 meeting!),
+        //         while completion-only PATCH on `syncedOcc` preserves its exact 19:30-20:00 timestamps!
+        let degradedReport = await googleService.pushOccurrenceChangesWithoutRebalance(
+            context: context,
+            preferences: prefs,
+            referenceDate: refNow,
+            calendar: testCalendar
+        )
+        XCTAssertEqual(createdPayloads.count, 0)
+        XCTAssertNil(newUnsyncedOcc.googleCalendarEventId)
+        XCTAssertEqual(degradedReport.deferredCount, 1)
+        XCTAssertEqual(degradedReport.upsertedCount, 1)
+        XCTAssertEqual(patchedPayloads.count, 1)
+        XCTAssertTrue(patchedPayloads[0].summary.hasPrefix("✅"))
+        XCTAssertEqual(
+            GoogleCalendarService.parseRFC3339(patchedPayloads[0].start.dateTime ?? ""),
+            existingStart
+        )
+        XCTAssertEqual(
+            GoogleCalendarService.parseRFC3339(patchedPayloads[0].end.dateTime ?? ""),
+            existingEnd
+        )
+
+        // Part B: Busy read succeeds -> caches complete 18:00-19:00 meeting interval -> next sync fails busy read (503)
+        //         within freshness window -> uses fresh interval cache so new task avoids 18:00-19:00!
+        failBusyRead = false
+        let healthyReport = await googleService.syncCalendarsAndRebalance(
+            context: context,
+            preferences: prefs,
+            referenceDate: refNow,
+            calendar: testCalendar
+        )
+        XCTAssertEqual(healthyReport.deferredCount, 0)
+        XCTAssertNotNil(newUnsyncedOcc.googleCalendarEventId)
+        let firstCreatedStart = try XCTUnwrap(createdPayloads.first?.start.dateTime.flatMap(GoogleCalendarService.parseRFC3339))
+        XCTAssertGreaterThanOrEqual(firstCreatedStart, meetingEnd)
+        XCTAssertEqual(prefs.cachedGoogleBusySnapshot?.hasCompleteIntervals, true)
+
+        createdPayloads.removeAll()
+        failBusyRead = true
+        let cachedTaskTemplate = TaskTemplate(
+            title: "Journal",
+            emoji: "📓",
+            recurrence: .once,
+            durationMinutes: 30,
+            isAutoScheduled: false,
+            anchorDate: today,
+            calendar: testCalendar
+        )
+        context.insert(cachedTaskTemplate)
+        let cachedOcc = TaskOccurrence(
+            scheduledDate: today,
+            periodKey: "once:\(cachedTaskTemplate.id.uuidString)",
+            status: .pending,
+            template: cachedTaskTemplate,
+            calendar: testCalendar
+        )
+        context.insert(cachedOcc)
+        try context.save()
+
+        let freshFallbackReport = await googleService.syncCalendarsAndRebalance(
+            context: context,
+            preferences: prefs,
+            referenceDate: refNow.addingTimeInterval(300), // 5 minutes later (fresh)
+            calendar: testCalendar
+        )
+        XCTAssertTrue(freshFallbackReport.usedCachedBusySnapshot)
+        XCTAssertEqual(freshFallbackReport.deferredCount, 0)
+        XCTAssertEqual(createdPayloads.count, 1)
+        let cachedFallbackStart = try XCTUnwrap(createdPayloads[0].start.dateTime.flatMap(GoogleCalendarService.parseRFC3339))
+        XCTAssertGreaterThanOrEqual(cachedFallbackStart, meetingEnd)
+
+        // Part C: Once snapshot expires past TTL, failed busy read refuses stale intervals and defers new slot writes
+        createdPayloads.removeAll()
+        let staleTaskTemplate = TaskTemplate(
+            title: "Read chapter",
+            emoji: "📖",
+            recurrence: .once,
+            durationMinutes: 30,
+            isAutoScheduled: false,
+            anchorDate: today,
+            calendar: testCalendar
+        )
+        context.insert(staleTaskTemplate)
+        let staleOcc = TaskOccurrence(
+            scheduledDate: today,
+            periodKey: "once:\(staleTaskTemplate.id.uuidString)",
+            status: .pending,
+            template: staleTaskTemplate,
+            calendar: testCalendar
+        )
+        context.insert(staleOcc)
+        try context.save()
+
+        let expiredReport = await googleService.syncCalendarsAndRebalance(
+            context: context,
+            preferences: prefs,
+            referenceDate: refNow.addingTimeInterval(8 * 3600), // 8 hours later (> 6h TTL)
+            calendar: testCalendar
+        )
+        XCTAssertFalse(expiredReport.usedCachedBusySnapshot)
+        XCTAssertGreaterThanOrEqual(expiredReport.deferredCount, 1)
+        XCTAssertNil(staleOcc.googleCalendarEventId)
+        XCTAssertEqual(createdPayloads.count, 0)
+    }
+
+    func testConcurrentDeletionQueuesPreserveItemsAddedDuringAsyncWaitAndEKMigration() async throws {
+        let today = makeDate(year: 2026, month: 11, day: 14)
+        let prefs = CozyPreferences(
+            pushTasksToGoogleCalendar: true,
+            googleSyncMode: .oauthREST,
+            googleClientID: "123456-test.apps.googleusercontent.com",
+            googleCalendarID: "primary"
+        )
+        context.insert(prefs)
+
+        // 1. Google OAuth queue: item A is awaiting network DELETE while item B is appended mid-flight -> B MUST survive!
+        let itemA = CozyPreferences.PendingGoogleEventDeletion(
+            accountKey: "alex@gmail.com",
+            calendarID: "primary",
+            eventID: "evt-delete-a"
+        )
+        let itemB = CozyPreferences.PendingGoogleEventDeletion(
+            accountKey: "alex@gmail.com",
+            calendarID: "primary",
+            eventID: "evt-delete-b"
+        )
+        prefs.enqueueGoogleDeletion(itemA)
+
+        var deleteEnteredContinuation: CheckedContinuation<Void, Never>?
+        var releaseDeleteAContinuation: CheckedContinuation<Void, Never>?
+
+        let testToken = GoogleOAuthToken(
+            accessToken: "mock-token",
+            refreshToken: "mock-refresh",
+            expiresAt: Date().addingTimeInterval(86400),
+            accountSummary: "alex@gmail.com",
+            accountKey: "alex@gmail.com"
+        )
+        let googleService = GoogleCalendarService(
+            httpLoader: { req in
+                let url = try XCTUnwrap(req.url)
+                let method = req.httpMethod ?? "GET"
+                if method == "DELETE" && url.path.hasSuffix("/evt-delete-a") {
+                    deleteEnteredContinuation?.resume()
+                    deleteEnteredContinuation = nil
+                    await withCheckedContinuation { cont in
+                        releaseDeleteAContinuation = cont
+                    }
+                    return (Data(), HTTPURLResponse(url: url, statusCode: 204, httpVersion: nil, headerFields: nil)!)
+                }
+                let emptyList = try JSONEncoder().encode(GoogleEventListResponse(items: [], nextPageToken: nil))
+                return (emptyList, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            },
+            initialToken: testToken,
+            freeTimeService: CalendarFreeTimeService(backing: MockEventStoreBacking()),
+            persistTokensToKeychain: false
+        )
+
+        let inFlightTask = Task { @MainActor in
+            try await googleService.pushAndMergeOccurrencesToGoogleAPI(
+                occurrences: [],
+                busyIntervalsByDay: [:],
+                preferences: prefs,
+                today: today,
+                calendar: testCalendar
+            )
+        }
+
+        await withCheckedContinuation { cont in
+            deleteEnteredContinuation = cont
+        }
+
+        // Enqueue deletion B while deletion A is suspended awaiting network completion!
+        prefs.enqueueGoogleDeletion(itemB)
+        XCTAssertEqual(prefs.pendingGoogleDeletions, [itemA, itemB])
+
+        releaseDeleteAContinuation?.resume()
+        let outcome = try await inFlightTask.value
+
+        XCTAssertEqual(outcome.removed, 1)
+        XCTAssertEqual(prefs.pendingGoogleDeletions, [itemB])
+
+        // 2. EventKit queue: queued item 1 succeeds, while a destination migration failure enqueues item 2 during the same pass!
+        let mockBacking = MockEventStoreBacking()
+        mockBacking.calendarsList = [
+            BackingCalendarInfo(
+                calendarIdentifier: "cal-old",
+                title: "Old Personal",
+                sourceTitle: "iCloud",
+                allowsContentModifications: true,
+                isDefaultForNewEvents: false
+            ),
+            BackingCalendarInfo(
+                calendarIdentifier: "cal-new",
+                title: "New Cozy",
+                sourceTitle: "iCloud",
+                allowsContentModifications: true,
+                isDefaultForNewEvents: true
+            )
+        ]
+        mockBacking.seedCommittedEvent(
+            BackingEventRecord(
+                eventIdentifier: "ek-queued-ok",
+                calendarIdentifier: "cal-old",
+                title: "Old Task",
+                startDate: today.addingTimeInterval(9 * 3600),
+                endDate: today.addingTimeInterval(9.5 * 3600)
+            )
+        )
+        mockBacking.seedCommittedEvent(
+            BackingEventRecord(
+                eventIdentifier: "ek-migrate-fail",
+                calendarIdentifier: "cal-old",
+                title: "Migrating Task",
+                startDate: today.addingTimeInterval(10 * 3600),
+                endDate: today.addingTimeInterval(10.5 * 3600)
+            )
+        )
+        mockBacking.failingRemoveIDs = ["ek-migrate-fail"]
+
+        prefs.enqueueEKDeletion(
+            .init(channelRaw: CozySyncChannel.apple.rawValue, calendarIdentifier: "cal-old", eventID: "ek-queued-ok")
+        )
+        prefs.appleTargetCalendarIdentifier = "cal-new"
+
+        let template = TaskTemplate(
+            title: "Stretch",
+            recurrence: .once,
+            durationMinutes: 30,
+            isAutoScheduled: false,
+            anchorDate: today,
+            calendar: testCalendar
+        )
+        context.insert(template)
+        let migratingOcc = TaskOccurrence(
+            scheduledDate: today,
+            periodKey: "once:\(template.id.uuidString)",
+            status: .pending,
+            template: template,
+            calendar: testCalendar
+        )
+        migratingOcc.appleCalendarEventIdentifier = "ek-migrate-fail"
+        migratingOcc.appleSyncedDestination = "apple|cal-old"
+        context.insert(migratingOcc)
+
+        let ekService = CalendarFreeTimeService(backing: mockBacking)
+        let ekOutcome = ekService.syncOccurrencesToAppleCalendar(
+            occurrences: [migratingOcc],
+            busyIntervalsByDay: [:],
+            preferences: prefs,
+            today: today,
+            calendar: testCalendar
+        )
+        XCTAssertEqual(ekOutcome.upserted, 1)
+        XCTAssertEqual(ekOutcome.removed, 1)
+        XCTAssertGreaterThanOrEqual(ekOutcome.failed, 1)
+        XCTAssertEqual(prefs.pendingEKDeletions.map(\.eventID), ["ek-migrate-fail"])
+    }
+
+    func testEventKitFailedRemovalRetainsTrackingAndFailedCommitLeavesMetadataUntouched() throws {
+        let today = makeDate(year: 2026, month: 11, day: 14)
+        let prefs = CozyPreferences(
+            pushTasksToAppleCalendar: true,
+            appleTargetCalendarIdentifier: "cal-apple"
+        )
+        context.insert(prefs)
+
+        let mockBacking = MockEventStoreBacking()
+        mockBacking.calendarsList = [
+            BackingCalendarInfo(
+                calendarIdentifier: "cal-apple",
+                title: "Home",
+                sourceTitle: "iCloud",
+                allowsContentModifications: true,
+                isDefaultForNewEvents: true
+            )
+        ]
+        mockBacking.seedCommittedEvent(
+            BackingEventRecord(
+                eventIdentifier: "ek-skip-fail",
+                calendarIdentifier: "cal-apple",
+                title: "Skipped Task",
+                startDate: today.addingTimeInterval(18 * 3600),
+                endDate: today.addingTimeInterval(18.5 * 3600),
+                notes: CalendarFreeTimeService.formatCozyMetadataTag(channel: .apple, occurrenceID: UUID())
+            )
+        )
+        mockBacking.failingRemoveIDs = ["ek-skip-fail"]
+
+        let t1 = TaskTemplate(title: "Skip me", recurrence: .once, durationMinutes: 30, isAutoScheduled: false, anchorDate: today, calendar: testCalendar)
+        let t2 = TaskTemplate(title: "Keep me", recurrence: .once, durationMinutes: 30, isAutoScheduled: false, anchorDate: today, calendar: testCalendar)
+        context.insert(t1)
+        context.insert(t2)
+
+        let skippedOcc = TaskOccurrence(
+            scheduledDate: today,
+            periodKey: "once:\(t1.id.uuidString)",
+            status: .skipped,
+            template: t1,
+            calendar: testCalendar
+        )
+        skippedOcc.appleCalendarEventIdentifier = "ek-skip-fail"
+        skippedOcc.appleSyncedDestination = "apple|cal-apple"
+
+        let activeOcc = TaskOccurrence(
+            scheduledDate: today,
+            periodKey: "once:\(t2.id.uuidString)",
+            status: .pending,
+            template: t2,
+            calendar: testCalendar
+        )
+        context.insert(skippedOcc)
+        context.insert(activeOcc)
+
+        let ekService = CalendarFreeTimeService(backing: mockBacking)
+
+        // 1. Removal of `skippedOcc` fails while `activeOcc` commits: `skippedOcc` MUST retain its event identifier & enqueue retry!
+        let partialOutcome = ekService.syncOccurrencesToAppleCalendar(
+            occurrences: [skippedOcc, activeOcc],
+            busyIntervalsByDay: [:],
+            preferences: prefs,
+            today: today,
+            calendar: testCalendar
+        )
+        XCTAssertEqual(partialOutcome.upserted, 1)
+        XCTAssertGreaterThanOrEqual(partialOutcome.failed, 1)
+        XCTAssertNotNil(activeOcc.appleCalendarEventIdentifier)
+        XCTAssertEqual(skippedOcc.appleCalendarEventIdentifier, "ek-skip-fail")
+        XCTAssertTrue(prefs.pendingEKDeletions.contains(where: { $0.eventID == "ek-skip-fail" }))
+
+        // 2. When `commit()` itself fails, staged local metadata MUST NOT be applied and backing store is reset!
+        let t3 = TaskTemplate(title: "Uncommitted task", recurrence: .once, durationMinutes: 30, isAutoScheduled: false, anchorDate: today, calendar: testCalendar)
+        context.insert(t3)
+        let uncommittedOcc = TaskOccurrence(
+            scheduledDate: today,
+            periodKey: "once:\(t3.id.uuidString)",
+            status: .pending,
+            template: t3,
+            calendar: testCalendar
+        )
+        context.insert(uncommittedOcc)
+
+        mockBacking.shouldFailCommit = true
+        let failedCommitOutcome = ekService.syncOccurrencesToAppleCalendar(
+            occurrences: [uncommittedOcc],
+            busyIntervalsByDay: [:],
+            preferences: prefs,
+            today: today,
+            calendar: testCalendar
+        )
+        XCTAssertEqual(failedCommitOutcome.upserted, 0)
+        XCTAssertGreaterThanOrEqual(failedCommitOutcome.failed, 1)
+        XCTAssertNotNil(failedCommitOutcome.errorMessage)
+        XCTAssertNil(uncommittedOcc.appleCalendarEventIdentifier)
+        XCTAssertNil(uncommittedOcc.lastAppleCalendarSyncSignature)
+        XCTAssertEqual(mockBacking.resetCount, 1)
+    }
+
+    func testPersistentStoreUpgradeMigratesLegacySnapshotsAndCivilDayKeysWithoutMislabelingHistory() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CozyMigrationTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let storeURL = tempDir.appendingPathComponent("LegacyUpgrade.store")
+        let schema = Schema([
+            TaskTemplate.self,
+            TaskOccurrence.self,
+            CozyPreferences.self,
+            DayCapacityOverride.self
+        ])
+
+        var laCalendar = Calendar(identifier: .gregorian)
+        laCalendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        laCalendar.firstWeekday = 2
+
+        // 2026-06-10 23:00 PDT == 2026-06-11 06:00 UTC (crosses UTC midnight!)
+        var pdtLateComps = DateComponents()
+        pdtLateComps.year = 2026
+        pdtLateComps.month = 6
+        pdtLateComps.day = 10
+        pdtLateComps.hour = 23
+        pdtLateComps.minute = 0
+        let lateEveningPDT = laCalendar.date(from: pdtLateComps)!
+
+        let legacyWeeklyOccID: UUID
+        let orphanCustomOccID: UUID
+
+        // Phase 1: Write simulated pre-upgrade rows into an on-disk SQLite SwiftData container
+        do {
+            let diskConfig = ModelConfiguration(schema: schema, url: storeURL)
+            let container1 = try ModelContainer(for: schema, configurations: [diskConfig])
+            let ctx1 = container1.mainContext
+
+            let prefs = CozyPreferences()
+            prefs.appliedDataMigrationVersion = 0
+            ctx1.insert(prefs)
+
+            let kitchenTemplate = TaskTemplate(
+                title: "Clean kitchen",
+                emoji: "🧽",
+                category: .home,
+                recurrence: .weekly,
+                durationMinutes: 15,
+                weight: .normal,
+                isAutoScheduled: true,
+                anchorDate: lateEveningPDT,
+                calendar: laCalendar
+            )
+            ctx1.insert(kitchenTemplate)
+
+            let legacyWeeklyOcc = TaskOccurrence(
+                scheduledDate: lateEveningPDT,
+                periodKey: "weekly:2026-06-08",
+                status: .completed,
+                completedAt: lateEveningPDT,
+                template: kitchenTemplate,
+                calendar: laCalendar
+            )
+            // Simulate an upgraded SQLite row from 8dde195 where snapshotSchemaVersion == 0,
+            // scheduledDayKey was empty, and non-empty property defaults ("once"/"Once"/"selfCare") populated SQLite!
+            legacyWeeklyOcc.snapshotSchemaVersion = 0
+            legacyWeeklyOcc.scheduledDayKey = ""
+            legacyWeeklyOcc.completedDayKey = nil
+            legacyWeeklyOcc.recurrenceKindSnapshotRaw = "once"
+            legacyWeeklyOcc.recurrenceLabelSnapshot = "Once"
+            legacyWeeklyOcc.categorySnapshotRaw = "selfCare"
+            ctx1.insert(legacyWeeklyOcc)
+            legacyWeeklyOccID = legacyWeeklyOcc.id
+
+            let orphanCustomOcc = TaskOccurrence(
+                scheduledDate: lateEveningPDT,
+                periodKey: "custom5:4021",
+                status: .completed,
+                completedAt: lateEveningPDT,
+                template: nil,
+                titleSnapshot: "Deep water orchids",
+                emojiSnapshot: "🌺",
+                durationMinutesSnapshot: 20,
+                calendar: laCalendar
+            )
+            orphanCustomOcc.snapshotSchemaVersion = 0
+            orphanCustomOcc.scheduledDayKey = ""
+            orphanCustomOcc.completedDayKey = nil
+            orphanCustomOcc.recurrenceKindSnapshotRaw = "once"
+            orphanCustomOcc.recurrenceLabelSnapshot = "Once"
+            orphanCustomOcc.categorySnapshotRaw = ""
+            ctx1.insert(orphanCustomOcc)
+            orphanCustomOccID = orphanCustomOcc.id
+
+            try ctx1.save()
+        }
+
+        // Phase 2: Reopen on-disk SQLite store in a fresh ModelContainer, run CozyDataMigrator, then edit & delete template
+        let reopenConfig = ModelConfiguration(schema: schema, url: storeURL)
+        let container2 = try ModelContainer(for: schema, configurations: [reopenConfig])
+        let ctx2 = container2.mainContext
+
+        let reopenedPrefs = try XCTUnwrap(try ctx2.fetch(FetchDescriptor<CozyPreferences>()).first)
+        XCTAssertEqual(reopenedPrefs.appliedDataMigrationVersion, 0)
+
+        CozyDataMigrator.migrateIfNeeded(
+            context: ctx2,
+            preferences: reopenedPrefs,
+            calendar: laCalendar
+        )
+        XCTAssertEqual(reopenedPrefs.appliedDataMigrationVersion, CozyDataMigrator.currentVersion)
+
+        // Mutate & delete the template AFTER migration to verify completed history is permanently frozen & accurate
+        if let liveTemplate = try ctx2.fetch(FetchDescriptor<TaskTemplate>()).first {
+            liveTemplate.title = "Mutated Garage Overhaul"
+            liveTemplate.recurrence = .monthly
+            liveTemplate.category = .work
+            liveTemplate.durationMinutes = 120
+            ctx2.delete(liveTemplate)
+            try ctx2.save()
+        }
+
+        let migratedOccurrences = try ctx2.fetch(FetchDescriptor<TaskOccurrence>())
+        let migratedWeekly = try XCTUnwrap(migratedOccurrences.first(where: { $0.id == legacyWeeklyOccID }))
+        let migratedOrphan = try XCTUnwrap(migratedOccurrences.first(where: { $0.id == orphanCustomOccID }))
+
+        XCTAssertEqual(migratedWeekly.snapshotSchemaVersion, TaskOccurrence.currentSnapshotSchemaVersion)
+        XCTAssertEqual(migratedWeekly.scheduledDayKey, "2026-06-10")
+        XCTAssertEqual(migratedWeekly.completedDayKey, "2026-06-10")
+        XCTAssertEqual(migratedWeekly.displayTitle, "Clean kitchen")
+        XCTAssertEqual(migratedWeekly.displayDurationMinutes, 15)
+        XCTAssertEqual(migratedWeekly.displayRecurrenceKind, .weekly)
+        XCTAssertEqual(migratedWeekly.recurrenceLabel, "Weekly")
+        XCTAssertEqual(migratedWeekly.displayCategory, .home)
+
+        XCTAssertEqual(migratedOrphan.displayRecurrenceKind, .everyNDays)
+        XCTAssertEqual(migratedOrphan.recurrenceLabel, "Every 5d")
+        XCTAssertEqual(migratedOrphan.scheduledDayKey, "2026-06-10")
+    }
+
+    func testSwitchingGoogleConnectionModesCleansUpPreviousChannelWithoutDuplicateEventSets() async throws {
+        let today = makeDate(year: 2026, month: 11, day: 14)
+        let prefs = CozyPreferences(
+            useGoogleCalendarSync: false,
+            pushTasksToGoogleCalendar: true,
+            googleSyncMode: .oauthREST,
+            googleClientID: "123456-test.apps.googleusercontent.com",
+            googleCalendarID: "primary"
+        )
+        context.insert(prefs)
+
+        let template = TaskTemplate(
+            title: "Bake sourdough",
+            emoji: "🍞",
+            recurrence: .once,
+            durationMinutes: 45,
+            isAutoScheduled: false,
+            anchorDate: today,
+            calendar: testCalendar
+        )
+        context.insert(template)
+        let occ = TaskOccurrence(
+            scheduledDate: today,
+            periodKey: "once:\(template.id.uuidString)",
+            status: .pending,
+            template: template,
+            calendar: testCalendar
+        )
+        context.insert(occ)
+        try context.save()
+
+        let mockBacking = MockEventStoreBacking()
+        mockBacking.calendarsList = [
+            BackingCalendarInfo(
+                calendarIdentifier: "ek-google-cal",
+                title: "alex@gmail.com",
+                sourceTitle: "Gmail",
+                allowsContentModifications: true,
+                isDefaultForNewEvents: false
+            )
+        ]
+        let ekService = CalendarFreeTimeService(backing: mockBacking)
+
+        var remoteOAuthEvents: [String: GoogleEventDTO] = [:]
+        let testToken = GoogleOAuthToken(
+            accessToken: "mock-token",
+            refreshToken: "mock-refresh",
+            expiresAt: Date().addingTimeInterval(86400),
+            accountSummary: "alex@gmail.com",
+            accountKey: "alex@gmail.com"
+        )
+
+        let googleService = GoogleCalendarService(
+            httpLoader: { req in
+                let url = try XCTUnwrap(req.url)
+                let method = req.httpMethod ?? "GET"
+                switch method {
+                case "GET":
+                    let body = try JSONEncoder().encode(GoogleEventListResponse(items: Array(remoteOAuthEvents.values), nextPageToken: nil))
+                    return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                case "POST":
+                    let payload = try JSONDecoder().decode(GoogleUpsertEventPayload.self, from: req.httpBody ?? Data())
+                    let id = payload.id ?? UUID().uuidString
+                    let dto = GoogleEventDTO(
+                        id: id,
+                        status: "confirmed",
+                        summary: payload.summary,
+                        description: payload.description,
+                        transparency: "opaque",
+                        start: payload.start,
+                        end: payload.end,
+                        extendedProperties: payload.extendedProperties
+                    )
+                    remoteOAuthEvents[id] = dto
+                    let body = try JSONEncoder().encode(dto)
+                    return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                case "PATCH":
+                    let payload = try JSONDecoder().decode(GoogleUpsertEventPayload.self, from: req.httpBody ?? Data())
+                    let id = url.lastPathComponent
+                    let dto = GoogleEventDTO(
+                        id: id,
+                        status: "confirmed",
+                        summary: payload.summary,
+                        description: payload.description,
+                        transparency: "opaque",
+                        start: payload.start,
+                        end: payload.end,
+                        extendedProperties: payload.extendedProperties
+                    )
+                    remoteOAuthEvents[id] = dto
+                    let body = try JSONEncoder().encode(dto)
+                    return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                case "DELETE":
+                    let id = url.lastPathComponent
+                    remoteOAuthEvents.removeValue(forKey: id)
+                    return (Data(), HTTPURLResponse(url: url, statusCode: 204, httpVersion: nil, headerFields: nil)!)
+                default:
+                    return (Data(), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                }
+            },
+            initialToken: testToken,
+            freeTimeService: ekService,
+            persistTokensToKeychain: false
+        )
+
+        // 1. Initial sync in `.oauthREST` mode -> 1 Google OAuth event, 0 Google Bridge events
+        _ = await googleService.syncCalendarsAndRebalance(
+            context: context,
+            preferences: prefs,
+            referenceDate: today,
+            calendar: testCalendar
+        )
+        XCTAssertEqual(remoteOAuthEvents.count, 1)
+        XCTAssertEqual(mockBacking.committedEvents.count, 0)
+        XCTAssertNotNil(occ.googleCalendarEventId)
+        XCTAssertNil(occ.syncedEKEventIdentifier)
+
+        // 2. Switch mode `.oauthREST` -> `.iosGoogleAccount`: OAuth event MUST be deleted and 1 Bridge event created!
+        prefs.googleSyncMode = .iosGoogleAccount
+        XCTAssertTrue(prefs.needsGoogleOAuthChannelSweep)
+
+        _ = await googleService.syncCalendarsAndRebalance(
+            context: context,
+            preferences: prefs,
+            referenceDate: today,
+            calendar: testCalendar
+        )
+        XCTAssertEqual(remoteOAuthEvents.count, 0)
+        XCTAssertNil(occ.googleCalendarEventId)
+        XCTAssertFalse(prefs.needsGoogleOAuthChannelSweep)
+        XCTAssertEqual(mockBacking.committedEvents.count, 1)
+        XCTAssertNotNil(occ.syncedEKEventIdentifier)
+
+        // 3. Switch mode `.iosGoogleAccount` -> `.oauthREST`: Bridge event MUST be deleted and 1 OAuth event created!
+        prefs.googleSyncMode = .oauthREST
+        XCTAssertTrue(prefs.needsGoogleBridgeChannelSweep)
+
+        _ = await googleService.syncCalendarsAndRebalance(
+            context: context,
+            preferences: prefs,
+            referenceDate: today,
+            calendar: testCalendar
+        )
+        XCTAssertEqual(mockBacking.committedEvents.count, 0)
+        XCTAssertNil(occ.syncedEKEventIdentifier)
+        XCTAssertFalse(prefs.needsGoogleBridgeChannelSweep)
+        XCTAssertEqual(remoteOAuthEvents.count, 1)
+        XCTAssertNotNil(occ.googleCalendarEventId)
+    }
+
+    func testIncrementalHistoricalStreakArchiveAndScopedCalendarSyncFetch() throws {
+        let startDay = makeDate(year: 2026, month: 6, day: 1)
+        let checkpointDay = DateHelpers.addDays(70, to: startDay, calendar: testCalendar)
+        let finalToday = DateHelpers.addDays(130, to: startDay, calendar: testCalendar)
+
+        let prefs = CozyPreferences(optionalBonusTasksEnabled: false)
+        context.insert(prefs)
+
+        let habit = TaskTemplate(
+            title: "Evening stretch",
+            recurrence: .daily,
+            durationMinutes: 15,
+            isAutoScheduled: false,
+            anchorDate: startDay,
+            calendar: testCalendar
+        )
+        context.insert(habit)
+
+        var allOccurrences: [TaskOccurrence] = []
+        for offset in 0...130 {
+            let day = DateHelpers.addDays(offset, to: startDay, calendar: testCalendar)
+            let completed = (offset != 12 && offset != 88) // Streak breaks at day 12 and day 88
+            let occ = TaskOccurrence(
+                scheduledDate: day,
+                periodKey: "daily:\(DateHelpers.dayKeyString(for: day, calendar: testCalendar))",
+                status: completed ? .completed : .pending,
+                completedAt: completed ? day.addingTimeInterval(20 * 3600) : nil,
+                template: habit,
+                calendar: testCalendar
+            )
+            context.insert(occ)
+            allOccurrences.append(occ)
+        }
+        // Attach a stale remote Google ID to day 5 (125 days before `finalToday`) to verify scoped sync fetch retains it
+        allOccurrences[5].googleCalendarEventId = "c021legacyremote"
+        try context.save()
+
+        // Step 1: Build initial archive up to `checkpointDay - 45`
+        let cutoff1 = DateHelpers.addDays(-SmartScheduler.streakArchiveCutoffDays, to: checkpointDay, calendar: testCalendar)
+        StreakAndBonusService.refreshHistoricalArchiveIfNeeded(
+            context: context,
+            preferences: prefs,
+            operationalCutoff: cutoff1,
+            today: checkpointDay,
+            calendar: testCalendar
+        )
+        let firstArchiveKey = try XCTUnwrap(prefs.historicalStreakArchive?.archivedThroughDayKey)
+        XCTAssertEqual(
+            firstArchiveKey,
+            DateHelpers.dayKeyString(for: DateHelpers.addDays(-1, to: cutoff1, calendar: testCalendar), calendar: testCalendar)
+        )
+
+        // Step 2: Advance incrementally to `finalToday - 45` (extends from `firstArchiveKey + 1d` instead of scanning from day 0)
+        let cutoff2 = DateHelpers.addDays(-SmartScheduler.streakArchiveCutoffDays, to: finalToday, calendar: testCalendar)
+        StreakAndBonusService.refreshHistoricalArchiveIfNeeded(
+            context: context,
+            preferences: prefs,
+            operationalCutoff: cutoff2,
+            today: finalToday,
+            calendar: testCalendar
+        )
+
+        let fullScan = StreakAndBonusService.evaluate(
+            occurrences: allOccurrences,
+            optionalBonusTasksEnabled: false,
+            historicalArchive: nil,
+            today: finalToday,
+            calendar: testCalendar
+        )
+        let operationalSlice = allOccurrences.filter { $0.scheduledDay(calendar: testCalendar) >= cutoff2 }
+        let incrementalEval = StreakAndBonusService.evaluate(
+            occurrences: operationalSlice,
+            persistedLongestStreak: prefs.longestRecordedStreak,
+            optionalBonusTasksEnabled: false,
+            historicalArchive: prefs.historicalStreakArchive,
+            today: finalToday,
+            calendar: testCalendar
+        )
+
+        XCTAssertEqual(incrementalEval.currentStreak, fullScan.currentStreak)
+        XCTAssertEqual(incrementalEval.longestStreak, fullScan.longestStreak)
+        XCTAssertEqual(incrementalEval.totalGoldDays, fullScan.totalGoldDays)
+        XCTAssertEqual(incrementalEval.totalSilverDays, fullScan.totalSilverDays)
+        XCTAssertEqual(incrementalEval.totalBronzeDays, fullScan.totalBronzeDays)
+
+        // Step 3: Scoped calendar sync & notification digest fetches exclude old unlinked history rows while keeping needed items
+        let syncCandidates = GoogleCalendarService.fetchOccurrencesForCalendarSync(
+            context: context,
+            today: finalToday,
+            calendar: testCalendar
+        )
+        XCTAssertLessThan(syncCandidates.count, 25)
+        XCTAssertTrue(syncCandidates.contains(where: { $0.id == allOccurrences[5].id }))
+        XCTAssertFalse(syncCandidates.contains(where: { $0.id == allOccurrences[10].id }))
+
+        let summaryCandidates = NotificationManager.fetchOccurrencesForSummarySync(
+            context: context,
+            now: finalToday.addingTimeInterval(12 * 3600),
+            calendar: testCalendar
+        )
+        XCTAssertLessThan(summaryCandidates.count, allOccurrences.count)
+        XCTAssertFalse(summaryCandidates.contains(where: { $0.id == allOccurrences[0].id }))
+        XCTAssertTrue(summaryCandidates.contains(where: { $0.id == allOccurrences[130].id }))
+    }
+
+    func testPinnedDueTodayHardDeadlineTaskCountsCapacityOnce() throws {
+        // Monday Nov 9, 2026: Today cup = 2h (120m); Tuesday budget = 45m; Wed-Sun = 0m
+        let monday = makeDate(year: 2026, month: 11, day: 9)
+        let tuesday = makeDate(year: 2026, month: 11, day: 10)
+
+        let prefs = CozyPreferences(
+            sundayBudgetMinutes: 0,
+            mondayBudgetMinutes: 120,
+            tuesdayBudgetMinutes: 45,
+            wednesdayBudgetMinutes: 0,
+            thursdayBudgetMinutes: 0,
+            fridayBudgetMinutes: 0,
+            saturdayBudgetMinutes: 0
+        )
+        prefs.recordCupCheckIn(hours: 2, for: monday, calendar: testCalendar)
+        context.insert(prefs)
+
+        let urgentTemplate = TaskTemplate(
+            title: "Submit rent check",
+            emoji: "🏠",
+            recurrence: .once,
+            durationMinutes: 60,
+            weight: .light,
+            hasHardDeadline: true,
+            hardDeadlineDate: monday,
+            isAutoScheduled: true,
+            anchorDate: monday,
+            calendar: testCalendar
+        )
+        let flexibleTemplate = TaskTemplate(
+            title: "Fold laundry",
+            emoji: "🧺",
+            recurrence: .weekly,
+            durationMinutes: 60,
+            weight: .light,
+            isAutoScheduled: true,
+            anchorDate: monday,
+            calendar: testCalendar
+        )
+        context.insert(urgentTemplate)
+        context.insert(flexibleTemplate)
+
+        // Pre-existing manually pinned occurrence due today (60m):
+        // - If counted ONCE: Monday remaining after 60m flexible task = 120 - 60 - 60 = 0m (> Tuesday's 45 - 60 = -15m) -> stays Monday!
+        // - If DOUBLE-COUNTED: Monday remaining = 120 - 120 - 60 = -60m (< Tuesday's -15m) -> wrongly displaced to Tuesday!
+        let pinnedUrgentOcc = TaskOccurrence(
+            scheduledDate: monday,
+            periodKey: "once:\(urgentTemplate.id.uuidString)",
+            status: .pending,
+            isManuallyPinned: true,
+            template: urgentTemplate,
+            calendar: testCalendar
+        )
+        context.insert(pinnedUrgentOcc)
+        try context.save()
+
+        SmartScheduler.rebalance(
+            context: context,
+            preferences: prefs,
+            calendarBusyByDay: [:],
+            referenceDate: monday,
+            calendar: testCalendar
+        )
+
+        let all = try context.fetch(FetchDescriptor<TaskOccurrence>())
+        let flexOcc = try XCTUnwrap(all.first(where: { $0.template?.id == flexibleTemplate.id }))
+
+        XCTAssertEqual(pinnedUrgentOcc.scheduledDay(calendar: testCalendar), monday)
+        XCTAssertEqual(
+            flexOcc.scheduledDay(calendar: testCalendar),
+            monday,
+            "Pinned due-today deadline task must only consume its 60m load once, leaving 60m on Monday (not Tuesday)"
+        )
+        XCTAssertNotEqual(flexOcc.scheduledDay(calendar: testCalendar), tuesday)
+    }
+
     private func makeDate(year: Int, month: Int, day: Int) -> Date {
         var comps = DateComponents()
         comps.year = year
@@ -1606,3 +2610,134 @@ final class SmartSchedulerTests: XCTestCase {
         return testCalendar.date(from: comps)!
     }
 }
+
+@MainActor
+private final class MockEventStoreBacking: EventStoreBacking {
+    struct MockBackingError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    var authStatus: EKAuthorizationStatus = .fullAccess
+    var calendarsList: [BackingCalendarInfo] = []
+    private(set) var committedEvents: [String: BackingEventRecord] = [:]
+    private var stagedSaves: [String: BackingEventRecord] = [:]
+    private var stagedRemovals: Set<String> = []
+    var failingRemoveIDs: Set<String> = []
+    var failingSaveIDs: Set<String> = []
+    var shouldFailCommit: Bool = false
+    private(set) var resetCount: Int = 0
+    private var counter: Int = 0
+
+    func seedCommittedEvent(_ record: BackingEventRecord) {
+        let id = record.eventIdentifier ?? "mock-seed-\(UUID().uuidString)"
+        record.eventIdentifier = id
+        committedEvents[id] = Self.clone(record)
+    }
+
+    func authorizationStatus() -> EKAuthorizationStatus {
+        authStatus
+    }
+
+    func requestFullAccess() async throws -> Bool {
+        authStatus == .fullAccess
+    }
+
+    func calendars() -> [BackingCalendarInfo] {
+        calendarsList
+    }
+
+    func events(from startDate: Date, to endDate: Date, calendarIdentifiers: [String]?) -> [BackingEventRecord] {
+        let filterSet = calendarIdentifiers.map(Set.init)
+        var visible = committedEvents
+        for (id, saved) in stagedSaves {
+            visible[id] = saved
+        }
+        for removedID in stagedRemovals {
+            visible.removeValue(forKey: removedID)
+        }
+        return visible.values
+            .filter { ev in
+                if let filterSet, !filterSet.contains(ev.calendarIdentifier) {
+                    return false
+                }
+                return ev.endDate > startDate && ev.startDate < endDate
+            }
+            .map(Self.clone)
+    }
+
+    func event(withIdentifier identifier: String) -> BackingEventRecord? {
+        if stagedRemovals.contains(identifier) {
+            return nil
+        }
+        if let staged = stagedSaves[identifier] {
+            return Self.clone(staged)
+        }
+        return committedEvents[identifier].map(Self.clone)
+    }
+
+    func makeNewEvent(in calendarIdentifier: String) -> BackingEventRecord {
+        counter += 1
+        return BackingEventRecord(
+            eventIdentifier: "mock-ek-\(counter)",
+            calendarIdentifier: calendarIdentifier
+        )
+    }
+
+    func save(_ event: BackingEventRecord) throws {
+        if event.eventIdentifier == nil {
+            counter += 1
+            event.eventIdentifier = "mock-ek-\(counter)"
+        }
+        let id = event.eventIdentifier!
+        if failingSaveIDs.contains(id) {
+            throw MockBackingError(message: "Simulated save failure for \(id)")
+        }
+        stagedRemovals.remove(id)
+        stagedSaves[id] = Self.clone(event)
+    }
+
+    func remove(_ event: BackingEventRecord) throws {
+        guard let id = event.resolvedEventIdentifier else { return }
+        if failingRemoveIDs.contains(id) {
+            throw MockBackingError(message: "Simulated remove failure for \(id)")
+        }
+        stagedSaves.removeValue(forKey: id)
+        stagedRemovals.insert(id)
+    }
+
+    func commit() throws {
+        if shouldFailCommit {
+            throw MockBackingError(message: "Simulated EventKit commit failure")
+        }
+        for (id, saved) in stagedSaves {
+            committedEvents[id] = Self.clone(saved)
+        }
+        for removedID in stagedRemovals {
+            committedEvents.removeValue(forKey: removedID)
+        }
+        stagedSaves.removeAll()
+        stagedRemovals.removeAll()
+    }
+
+    func reset() {
+        resetCount += 1
+        stagedSaves.removeAll()
+        stagedRemovals.removeAll()
+    }
+
+    private static func clone(_ src: BackingEventRecord) -> BackingEventRecord {
+        BackingEventRecord(
+            eventIdentifier: src.eventIdentifier,
+            calendarIdentifier: src.calendarIdentifier,
+            title: src.title,
+            startDate: src.startDate,
+            endDate: src.endDate,
+            isAllDay: src.isAllDay,
+            isFreeAvailability: src.isFreeAvailability,
+            url: src.url,
+            notes: src.notes
+        )
+    }
+}
+

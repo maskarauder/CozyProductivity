@@ -43,13 +43,17 @@ final class TaskOccurrence {
     var hardDeadlineSnapshotDayKey: String = ""
 
     /// Frozen snapshot fields preserved for completed/skipped history & summaries even if a template is later edited or deleted.
+    /// Defaults are intentionally empty so SwiftData lightweight migration never mislabels legacy completed records.
     var titleSnapshot: String
     var emojiSnapshot: String
     var durationMinutesSnapshot: Int
     var notesSnapshot: String = ""
-    var recurrenceKindSnapshotRaw: String = RecurrenceKind.once.rawValue
-    var recurrenceLabelSnapshot: String = "Once"
-    var categorySnapshotRaw: String = TaskCategory.selfCare.rawValue
+    var recurrenceKindSnapshotRaw: String = ""
+    var recurrenceLabelSnapshot: String = ""
+    var categorySnapshotRaw: String = ""
+    var snapshotSchemaVersion: Int = 0
+
+    nonisolated static let currentSnapshotSchemaVersion = 2
 
     var template: TaskTemplate?
 
@@ -91,6 +95,7 @@ final class TaskOccurrence {
         self.recurrenceKindSnapshotRaw = template.recurrence.rawValue
         self.recurrenceLabelSnapshot = template.recurrenceDisplayLabel
         self.categorySnapshotRaw = template.category.rawValue
+        self.snapshotSchemaVersion = Self.currentSnapshotSchemaVersion
         self.template = template
 
         if let calendar {
@@ -165,8 +170,7 @@ final class TaskOccurrence {
     /// Captures live template fields into frozen snapshots right before an occurrence transitions out of `.pending`,
     /// or backfills any missing legacy snapshot fields without overwriting already-frozen completed/skipped history.
     func freezeSnapshotsFromCurrentState(calendar: Calendar = DateHelpers.calendar) {
-        guard let template else { return }
-        if status == .pending {
+        if status == .pending, let template {
             titleSnapshot = template.title
             emojiSnapshot = template.emoji
             durationMinutesSnapshot = template.durationMinutes
@@ -180,28 +184,9 @@ final class TaskOccurrence {
             let deadline = effectiveHardDeadline(calendar: calendar)
             hardDeadlineSnapshot = deadline
             hardDeadlineSnapshotDayKey = deadline.map { DateHelpers.dayKeyString(for: $0, calendar: calendar) } ?? ""
+            snapshotSchemaVersion = Self.currentSnapshotSchemaVersion
         } else {
-            if titleSnapshot.isEmpty {
-                titleSnapshot = template.title
-            }
-            if emojiSnapshot.isEmpty {
-                emojiSnapshot = template.emoji
-            }
-            if durationMinutesSnapshot <= 0 {
-                durationMinutesSnapshot = template.durationMinutes
-            }
-            if weightSnapshotRaw.isEmpty {
-                weightSnapshotRaw = template.weight.rawValue
-            }
-            if recurrenceKindSnapshotRaw.isEmpty {
-                recurrenceKindSnapshotRaw = template.recurrence.rawValue
-            }
-            if recurrenceLabelSnapshot.isEmpty {
-                recurrenceLabelSnapshot = template.recurrenceDisplayLabel
-            }
-            if categorySnapshotRaw.isEmpty {
-                categorySnapshotRaw = template.category.rawValue
-            }
+            migrateLegacyRecordIfNeeded(calendar: calendar)
         }
     }
 
@@ -224,6 +209,108 @@ final class TaskOccurrence {
         let normDL = periodDeadline.map { DateHelpers.startOfDay(for: $0, calendar: calendar) }
         hardDeadlineSnapshot = normDL
         hardDeadlineSnapshotDayKey = normDL.map { DateHelpers.dayKeyString(for: $0, calendar: calendar) } ?? ""
+        snapshotSchemaVersion = Self.currentSnapshotSchemaVersion
+    }
+
+    /// Upgrades pre-existing persistent store rows (from legacy releases or unmigrated schemas),
+    /// backfilling civil day keys and recovering exact recurrence/category/notes without overwriting frozen titles/durations.
+    func migrateLegacyRecordIfNeeded(calendar: Calendar = DateHelpers.calendar) {
+        let occDay = normalizeCivilDates(in: calendar)
+
+        if let rawDL = hardDeadlineSnapshot, hardDeadlineSnapshotDayKey.isEmpty {
+            let resolvedDL = DateHelpers.resolveCivilDay(
+                dayKey: hardDeadlineSnapshotDayKey,
+                fallbackDate: rawDL,
+                storedTimezoneID: scheduledTimezoneID,
+                calendar: calendar
+            )
+            hardDeadlineSnapshot = resolvedDL.date
+            hardDeadlineSnapshotDayKey = resolvedDL.dayKey
+        }
+
+        if status == .pending {
+            if let template {
+                let win = DateHelpers.periodWindow(for: template, containing: occDay, calendar: calendar)
+                let scopedDL: Date? = {
+                    guard let dl = template.normalizedHardDeadline(calendar: calendar) else { return nil }
+                    return template.recurrence == .once ? dl : ((dl >= win.start && dl <= win.end) ? dl : nil)
+                }()
+                refreshPendingSnapshotsFromTemplate(periodDeadline: scopedDL, calendar: calendar)
+            } else {
+                snapshotSchemaVersion = Self.currentSnapshotSchemaVersion
+            }
+            return
+        }
+
+        if let template {
+            if titleSnapshot.isEmpty {
+                titleSnapshot = template.title
+            }
+            if emojiSnapshot.isEmpty {
+                emojiSnapshot = template.emoji
+            }
+            if durationMinutesSnapshot <= 0 {
+                durationMinutesSnapshot = template.durationMinutes
+            }
+            if weightSnapshotRaw.isEmpty {
+                weightSnapshotRaw = template.weight.rawValue
+            }
+        }
+
+        guard snapshotSchemaVersion < Self.currentSnapshotSchemaVersion else { return }
+
+        // `periodKey` was recorded at occurrence creation time (`weekly:...`, `daily:...`, `monthly:...`, `custom3:...`, `once:...`)
+        // and accurately identifies historical recurrence even if the template was later edited, deleted, or defaulted in SQLite.
+        if let inferred = Self.inferRecurrenceFromPeriodKey(periodKey) {
+            recurrenceKindSnapshotRaw = inferred.kind.rawValue
+            recurrenceLabelSnapshot = inferred.label
+        } else if let template {
+            if recurrenceKindSnapshotRaw.isEmpty || snapshotSchemaVersion == 0 {
+                recurrenceKindSnapshotRaw = template.recurrence.rawValue
+                recurrenceLabelSnapshot = template.recurrenceDisplayLabel
+            }
+        } else if recurrenceKindSnapshotRaw.isEmpty {
+            recurrenceKindSnapshotRaw = RecurrenceKind.once.rawValue
+            recurrenceLabelSnapshot = "Once"
+        }
+
+        if let template {
+            if categorySnapshotRaw.isEmpty || snapshotSchemaVersion == 0 {
+                categorySnapshotRaw = template.category.rawValue
+            }
+            if notesSnapshot.isEmpty {
+                notesSnapshot = template.notes
+            }
+        }
+
+        snapshotSchemaVersion = Self.currentSnapshotSchemaVersion
+    }
+
+    nonisolated static func inferRecurrenceFromPeriodKey(_ periodKey: String) -> (kind: RecurrenceKind, label: String)? {
+        if periodKey.hasPrefix("once:") {
+            return (.once, "Once")
+        }
+        if periodKey.hasPrefix("daily:") {
+            return (.daily, "Daily")
+        }
+        if periodKey.hasPrefix("weekly:") {
+            return (.weekly, "Weekly")
+        }
+        if periodKey.hasPrefix("biweekly:") {
+            return (.biweekly, "Biweekly")
+        }
+        if periodKey.hasPrefix("monthly:") {
+            return (.monthly, "Monthly")
+        }
+        if periodKey.hasPrefix("custom") {
+            let suffix = periodKey.dropFirst("custom".count)
+            let digits = suffix.prefix { $0.isNumber }
+            if let days = Int(digits), days >= 2 {
+                return (.customDays, "Every \(days)d")
+            }
+            return (.customDays, "Custom")
+        }
+        return nil
     }
 
     // MARK: - Civil & Logical Day Resolution
@@ -366,28 +453,63 @@ final class TaskOccurrence {
     }
 
     var displayNotes: String {
-        guard status == .pending, let template else { return notesSnapshot }
-        return template.notes
+        if status == .pending, let template {
+            return template.notes
+        }
+        if !notesSnapshot.isEmpty || snapshotSchemaVersion >= Self.currentSnapshotSchemaVersion {
+            return notesSnapshot
+        }
+        return template?.notes ?? ""
     }
 
     var displayRecurrenceKind: RecurrenceKind {
-        guard status == .pending, let template else {
-            return RecurrenceKind(rawValue: recurrenceKindSnapshotRaw) ?? .once
+        if status == .pending, let template {
+            return template.recurrence
         }
-        return template.recurrence
+        if snapshotSchemaVersion >= Self.currentSnapshotSchemaVersion,
+           let frozen = RecurrenceKind(rawValue: recurrenceKindSnapshotRaw) {
+            return frozen
+        }
+        if let inferred = Self.inferRecurrenceFromPeriodKey(periodKey) {
+            return inferred.kind
+        }
+        if let frozen = RecurrenceKind(rawValue: recurrenceKindSnapshotRaw) {
+            return frozen
+        }
+        return template?.recurrence ?? .once
     }
 
     var displayCategory: TaskCategory? {
         if status == .pending {
             return template?.category
         }
+        if snapshotSchemaVersion >= Self.currentSnapshotSchemaVersion,
+           let frozen = TaskCategory(rawValue: categorySnapshotRaw) {
+            return frozen
+        }
+        if !categorySnapshotRaw.isEmpty, snapshotSchemaVersion > 0,
+           let frozen = TaskCategory(rawValue: categorySnapshotRaw) {
+            return frozen
+        }
+        if let template {
+            return template.category
+        }
         return TaskCategory(rawValue: categorySnapshotRaw)
     }
 
     var recurrenceLabel: String {
-        guard status == .pending, let template else {
-            return recurrenceLabelSnapshot.isEmpty ? "Once" : recurrenceLabelSnapshot
+        if status == .pending, let template {
+            return template.recurrenceDisplayLabel
         }
-        return template.recurrenceDisplayLabel
+        if snapshotSchemaVersion >= Self.currentSnapshotSchemaVersion, !recurrenceLabelSnapshot.isEmpty {
+            return recurrenceLabelSnapshot
+        }
+        if let inferred = Self.inferRecurrenceFromPeriodKey(periodKey) {
+            return inferred.label
+        }
+        if !recurrenceLabelSnapshot.isEmpty {
+            return recurrenceLabelSnapshot
+        }
+        return template?.recurrenceDisplayLabel ?? "Once"
     }
 }

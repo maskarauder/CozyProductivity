@@ -200,41 +200,68 @@ struct RootTabView: View {
 
     private func refreshCalendarAndRebalance(using explicitPrefs: CozyPreferences? = nil) {
         let prefs = explicitPrefs ?? activePreferences
+        CozyDataMigrator.migrateIfNeeded(context: modelContext, preferences: prefs)
+
         let today = DateHelpers.logicalToday()
         currentLogicalDay = today
         let horizonEnd = DateHelpers.addDays(SmartScheduler.defaultHorizonDays - 1, to: today)
 
-        var initialBusyByDay: [Date: Int] = [:]
+        var localIntervalSources: [[Date: [(Date, Date)]]] = []
         var canRunImmediateLocalRebalance = true
 
         if prefs.useCalendarSync {
             CalendarFreeTimeService.shared.refreshAuthorizationStatus()
             if CalendarFreeTimeService.shared.hasReadAccess {
-                initialBusyByDay = CalendarFreeTimeService.shared.busyMinutesByDay(
+                let appleIntervals = CalendarFreeTimeService.shared.busyIntervalsByDay(
                     from: today,
                     to: horizonEnd,
                     wakingStartHour: prefs.wakingStartHour,
                     wakingEndHour: prefs.wakingEndHour
                 )
+                localIntervalSources.append(appleIntervals)
             } else {
                 canRunImmediateLocalRebalance = false
             }
         }
 
         if prefs.useGoogleCalendarSync {
-            if let snapshot = prefs.cachedGoogleBusySnapshot {
-                for (dayKey, mins) in snapshot.busyMinutesByDayKey {
-                    if let day = DateHelpers.date(fromDayKey: dayKey),
-                       day >= today && day <= horizonEnd {
-                        initialBusyByDay[day] = max(initialBusyByDay[day] ?? 0, mins)
-                    }
+            switch prefs.googleSyncMode {
+            case .oauthREST:
+                let rawCalID = prefs.googleCalendarID.trimmingCharacters(in: .whitespacesAndNewlines)
+                let calID = rawCalID.isEmpty ? "primary" : rawCalID
+                let expectedDest = GoogleCalendarService.makeGoogleDestinationKey(
+                    accountKey: GoogleCalendarService.shared.activeOAuthAccountIdentity,
+                    calendarID: calID
+                )
+                if let cachedIntervals = prefs.cachedGoogleBusySnapshot?.freshIntervalsByDay(
+                    forDestination: expectedDest,
+                    maxAgeSeconds: GoogleCalendarService.defaultMaxCachedBusySnapshotAgeSeconds,
+                    now: Date()
+                ) {
+                    localIntervalSources.append(cachedIntervals.filter { $0.key >= today && $0.key <= horizonEnd })
+                } else if prefs.shouldAutoSyncCalendarsOnChange {
+                    // Defer local rebalance until the async Google busy read succeeds (or reports failure)
+                    canRunImmediateLocalRebalance = false
                 }
-            } else if prefs.shouldAutoSyncCalendarsOnChange {
-                // Defer local rebalance until the async Google busy read succeeds (or reports failure)
-                canRunImmediateLocalRebalance = false
+
+            case .iosGoogleAccount:
+                CalendarFreeTimeService.shared.refreshAuthorizationStatus()
+                if CalendarFreeTimeService.shared.hasReadAccess,
+                   !CalendarFreeTimeService.shared.googleAccountCalendars().isEmpty {
+                    let bridgeIntervals = CalendarFreeTimeService.shared.googleBridgeBusyIntervalsByDay(
+                        from: today,
+                        to: horizonEnd,
+                        wakingStartHour: prefs.wakingStartHour,
+                        wakingEndHour: prefs.wakingEndHour
+                    )
+                    localIntervalSources.append(bridgeIntervals)
+                } else if prefs.shouldAutoSyncCalendarsOnChange {
+                    canRunImmediateLocalRebalance = false
+                }
             }
         }
 
+        let initialBusyByDay = CalendarFreeTimeService.mergedBusyMinutesByDay(intervalSources: localIntervalSources)
         calendarBusyByDay = initialBusyByDay
 
         if canRunImmediateLocalRebalance {
@@ -246,7 +273,7 @@ struct RootTabView: View {
             )
         }
 
-        if prefs.shouldAutoSyncCalendarsOnChange {
+        if prefs.shouldAutoSyncCalendarsOnChange || (prefs.autoSyncCalendarChanges && prefs.hasPendingCalendarCleanup) {
             Task { @MainActor in
                 let report = await GoogleCalendarService.shared.syncCalendarsAndRebalance(
                     context: modelContext,
@@ -258,11 +285,14 @@ struct RootTabView: View {
                 }
             }
         } else {
-            let latestOccurrences = fetchOperationalOccurrences(around: today)
+            let summaryOccurrences = NotificationManager.fetchOccurrencesForSummarySync(
+                context: modelContext,
+                now: Date()
+            )
             Task { @MainActor in
                 await NotificationManager.shared.syncSummaryNotifications(
                     preferences: prefs,
-                    occurrences: latestOccurrences
+                    occurrences: summaryOccurrences
                 )
             }
         }
@@ -271,13 +301,16 @@ struct RootTabView: View {
     private func syncNotifications(using explicitPrefs: CozyPreferences? = nil) {
         let prefs = explicitPrefs ?? activePreferences
         let logicalDay = DateHelpers.logicalToday()
-        let latestOccurrences = fetchOperationalOccurrences(around: logicalDay)
+        let summaryOccurrences = NotificationManager.fetchOccurrencesForSummarySync(
+            context: modelContext,
+            now: Date()
+        )
         Task { @MainActor in
             await NotificationManager.shared.syncSummaryNotifications(
                 preferences: prefs,
-                occurrences: latestOccurrences
+                occurrences: summaryOccurrences
             )
-            if prefs.autoSyncCalendarChanges && prefs.hasAnyCalendarPushEnabled {
+            if prefs.autoSyncCalendarChanges && (prefs.hasAnyCalendarPushEnabled || prefs.hasPendingCalendarCleanup) {
                 let report = await GoogleCalendarService.shared.pushOccurrenceChangesWithoutRebalance(
                     context: modelContext,
                     preferences: prefs,

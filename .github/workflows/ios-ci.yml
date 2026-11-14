@@ -56,8 +56,25 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             COMPILER_INDEX_STORE_ENABLE=NO
 
-      - name: Verify Release Archive (generic/platform=iOS)
+      - name: Verify Release Archive & Option A Packaging Metadata (generic/platform=iOS)
         run: |
+          set -euo pipefail
+
+          # Verify TestFlight prerelease tag normalizer & Apple CFBundleShortVersionString validator
+          normalize_tag() {
+            local raw="$1"
+            local v="${raw#[vV]}"
+            v="${v%%+*}"
+            v="${v%%-*}"
+            printf '%s' "$v"
+          }
+          REGEX='^[0-9]+(\.[0-9]+){0,2}$'
+          [[ "$(normalize_tag 'v1.0.0-beta.1')" == "1.0.0" ]]
+          [[ "$(normalize_tag 'v2.4.0-rc.3+build.9')" == "2.4.0" ]]
+          [[ "1.0.0" =~ ${REGEX} ]]
+          [[ ! "1.0.0.4" =~ ${REGEX} ]]
+          [[ ! "beta" =~ ${REGEX} ]]
+
           ARCHIVE_PATH="${RUNNER_TEMP}/CozyProductivity-CI.xcarchive"
           xcodebuild archive \
             -project CozyProductivity.xcodeproj \
@@ -65,9 +82,15 @@ jobs:
             -configuration Release \
             -destination "generic/platform=iOS" \
             -archivePath "${ARCHIVE_PATH}" \
+            MARKETING_VERSION="1.0.0" \
+            CURRENT_PROJECT_VERSION="42" \
+            CODE_SIGN_STYLE=Automatic \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             COMPILER_INDEX_STORE_ENABLE=NO
+          /usr/libexec/PlistBuddy -c "Set :ApplicationProperties:Team ABCDE12345" "${ARCHIVE_PATH}/Info.plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :ApplicationProperties:Team string ABCDE12345" "${ARCHIVE_PATH}/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:Team' "${ARCHIVE_PATH}/Info.plist")" = "ABCDE12345"
           test -d "${ARCHIVE_PATH}/Products/Applications/CozyProductivity.app"
           test -f "${ARCHIVE_PATH}/Products/Applications/CozyProductivity.app/PrivacyInfo.xcprivacy"
           rm -rf "${ARCHIVE_PATH}"

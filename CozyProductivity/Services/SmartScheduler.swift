@@ -79,6 +79,8 @@ enum SmartScheduler {
         horizonDays: Int = defaultHorizonDays,
         calendar: Calendar = DateHelpers.calendar
     ) {
+        CozyDataMigrator.migrateIfNeeded(context: context, preferences: preferences, calendar: calendar)
+
         let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
         let safeHorizon = max(7, horizonDays)
         let horizonEnd = DateHelpers.addDays(safeHorizon - 1, to: today, calendar: calendar)
@@ -111,6 +113,7 @@ enum SmartScheduler {
         var capacityByDay: [Date: Int] = [:]
         var unbookedByDay: [Date: Int] = [:]
         var usedMinutesByDay: [Date: Int] = [:]
+        var accountedLoadByOccurrenceID: [UUID: (day: Date, minutes: Int)] = [:]
 
         for offset in 0..<safeHorizon {
             let day = DateHelpers.addDays(offset, to: today, calendar: calendar)
@@ -239,9 +242,14 @@ enum SmartScheduler {
         // 3. Count completed occurrences FIRST using effectiveLoadMinutes (includes weight adjustments!)
         for occ in survivingOccurrences where occ.status == .completed {
             let effectiveDay = occ.bonusDay(calendar: calendar) ?? occ.scheduledDay(calendar: calendar)
-            if effectiveDay >= today && effectiveDay <= horizonEnd {
-                usedMinutesByDay[effectiveDay, default: 0] += occ.effectiveLoadMinutes
-            }
+            recordOccurrenceLoad(
+                occ,
+                on: effectiveDay,
+                horizonStart: today,
+                horizonEnd: horizonEnd,
+                usedMinutesByDay: &usedMinutesByDay,
+                accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+            )
         }
 
         // Count manually-pinned pending items — UNLESS Today's cup cannot fit a non-deadline pinned item on today
@@ -257,13 +265,21 @@ enum SmartScheduler {
                     continue
                 }
             }
-            usedMinutesByDay[d, default: 0] += occ.effectiveLoadMinutes
+            recordOccurrenceLoad(
+                occ,
+                on: d,
+                horizonStart: today,
+                horizonEnd: horizonEnd,
+                usedMinutesByDay: &usedMinutesByDay,
+                accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+            )
         }
 
         let activeTemplates = templates.filter { $0.isActive }
 
         // 4. Phase A: Urgent Hard-Deadline Tasks Forced Onto Today (`effectivePeriodDeadline <= today`)
         // Scheduled FIRST so they always appear on Today even when cup == 0, and claim Today's cup before non-deadline tasks.
+        // Uses `recordOccurrenceLoad` so pinned deadline occurrences are NEVER double-counted!
         var templatesHandledForTodayDeadline: Set<String> = []
         for template in activeTemplates {
             if template.recurrence == .once {
@@ -279,7 +295,14 @@ enum SmartScheduler {
                     if existing.status == .pending {
                         existing.setScheduledDay(today, calendar: calendar)
                         existing.setBonusDay(nil, calendar: calendar)
-                        usedMinutesByDay[today, default: 0] += existing.effectiveLoadMinutes
+                        recordOccurrenceLoad(
+                            existing,
+                            on: today,
+                            horizonStart: today,
+                            horizonEnd: horizonEnd,
+                            usedMinutesByDay: &usedMinutesByDay,
+                            accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+                        )
                     }
                 } else {
                     let created = TaskOccurrence(
@@ -292,7 +315,14 @@ enum SmartScheduler {
                     )
                     context.insert(created)
                     occurrencesByTemplateAndPeriod[mapKey] = created
-                    usedMinutesByDay[today, default: 0] += created.effectiveLoadMinutes
+                    recordOccurrenceLoad(
+                        created,
+                        on: today,
+                        horizonStart: today,
+                        horizonEnd: horizonEnd,
+                        usedMinutesByDay: &usedMinutesByDay,
+                        accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+                    )
                 }
                 templatesHandledForTodayDeadline.insert(mapKey)
             } else {
@@ -306,7 +336,14 @@ enum SmartScheduler {
                     if existing.status == .pending {
                         existing.setScheduledDay(today, calendar: calendar)
                         existing.setBonusDay(nil, calendar: calendar)
-                        usedMinutesByDay[today, default: 0] += existing.effectiveLoadMinutes
+                        recordOccurrenceLoad(
+                            existing,
+                            on: today,
+                            horizonStart: today,
+                            horizonEnd: horizonEnd,
+                            usedMinutesByDay: &usedMinutesByDay,
+                            accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+                        )
                     }
                 } else {
                     let created = TaskOccurrence(
@@ -319,7 +356,14 @@ enum SmartScheduler {
                     )
                     context.insert(created)
                     occurrencesByTemplateAndPeriod[mapKey] = created
-                    usedMinutesByDay[today, default: 0] += created.effectiveLoadMinutes
+                    recordOccurrenceLoad(
+                        created,
+                        on: today,
+                        horizonStart: today,
+                        horizonEnd: horizonEnd,
+                        usedMinutesByDay: &usedMinutesByDay,
+                        accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+                    )
                 }
                 templatesHandledForTodayDeadline.insert(mapKey)
             }
@@ -338,6 +382,7 @@ enum SmartScheduler {
                 survivingOccurrences: survivingOccurrences,
                 occurrencesMap: &occurrencesByTemplateAndPeriod,
                 usedMinutesByDay: &usedMinutesByDay,
+                accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID,
                 capacityByDay: capacityByDay,
                 unbookedByDay: unbookedByDay,
                 preferences: preferences,
@@ -556,11 +601,11 @@ enum SmartScheduler {
                 calendar: calendar
             )
 
-            let placedLoad: Int
+            let placedOcc: TaskOccurrence
             if let existing = job.existingOccurrence {
                 existing.setScheduledDay(chosenDay, calendar: calendar)
                 existing.status = .pending
-                placedLoad = existing.effectiveLoadMinutes
+                placedOcc = existing
             } else {
                 let created = TaskOccurrence(
                     scheduledDate: chosenDay,
@@ -573,10 +618,17 @@ enum SmartScheduler {
                 context.insert(created)
                 let mapKey = "\(job.template.id.uuidString)|\(job.periodKey)"
                 occurrencesByTemplateAndPeriod[mapKey] = created
-                placedLoad = created.effectiveLoadMinutes
+                placedOcc = created
             }
 
-            usedMinutesByDay[chosenDay, default: 0] += placedLoad
+            recordOccurrenceLoad(
+                placedOcc,
+                on: chosenDay,
+                horizonStart: today,
+                horizonEnd: horizonEnd,
+                usedMinutesByDay: &usedMinutesByDay,
+                accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+            )
         }
 
         let archiveCutoff = DateHelpers.addDays(-streakArchiveCutoffDays, to: today, calendar: calendar)
@@ -874,6 +926,37 @@ enum SmartScheduler {
 
     // MARK: - Internal Helpers
 
+    private static func recordOccurrenceLoad(
+        _ occ: TaskOccurrence,
+        on day: Date,
+        horizonStart: Date,
+        horizonEnd: Date,
+        usedMinutesByDay: inout [Date: Int],
+        accountedLoadByOccurrenceID: inout [UUID: (day: Date, minutes: Int)]
+    ) {
+        if let previous = accountedLoadByOccurrenceID.removeValue(forKey: occ.id) {
+            usedMinutesByDay[previous.day] = max(0, (usedMinutesByDay[previous.day] ?? 0) - previous.minutes)
+        }
+        guard day >= horizonStart && day <= horizonEnd else { return }
+        let load = occ.effectiveLoadMinutes
+        usedMinutesByDay[day, default: 0] += load
+        accountedLoadByOccurrenceID[occ.id] = (day: day, minutes: load)
+    }
+
+    private static func deleteOccurrence(
+        _ occ: TaskOccurrence,
+        context: ModelContext,
+        preferences: CozyPreferences,
+        usedMinutesByDay: inout [Date: Int],
+        accountedLoadByOccurrenceID: inout [UUID: (day: Date, minutes: Int)]
+    ) {
+        if let previous = accountedLoadByOccurrenceID.removeValue(forKey: occ.id) {
+            usedMinutesByDay[previous.day] = max(0, (usedMinutesByDay[previous.day] ?? 0) - previous.minutes)
+        }
+        preferences.enqueuePendingDeletions(for: occ)
+        context.delete(occ)
+    }
+
     private static func deleteOccurrence(
         _ occ: TaskOccurrence,
         context: ModelContext,
@@ -931,6 +1014,7 @@ enum SmartScheduler {
         survivingOccurrences: [TaskOccurrence],
         occurrencesMap: inout [String: TaskOccurrence],
         usedMinutesByDay: inout [Date: Int],
+        accountedLoadByOccurrenceID: inout [UUID: (day: Date, minutes: Int)],
         capacityByDay: [Date: Int],
         unbookedByDay: [Date: Int],
         preferences: CozyPreferences,
@@ -957,7 +1041,13 @@ enum SmartScheduler {
                     let itemLoad = occurrencesMap[mapKey]?.effectiveLoadMinutes ?? template.effectiveLoadMinutes
                     if todayCupHours == 0 || todayRem < itemLoad {
                         if let existing = occurrencesMap[mapKey], existing.status == .pending && !existing.isManuallyPinned {
-                            deleteOccurrence(existing, context: context, preferences: preferences)
+                            deleteOccurrence(
+                                existing,
+                                context: context,
+                                preferences: preferences,
+                                usedMinutesByDay: &usedMinutesByDay,
+                                accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+                            )
                             occurrencesMap.removeValue(forKey: mapKey)
                         }
                         continue
@@ -967,7 +1057,14 @@ enum SmartScheduler {
                 if let existing = occurrencesMap[mapKey] {
                     if existing.status == .pending && !existing.isManuallyPinned {
                         existing.setScheduledDay(day, calendar: calendar)
-                        usedMinutesByDay[day, default: 0] += existing.effectiveLoadMinutes
+                        recordOccurrenceLoad(
+                            existing,
+                            on: day,
+                            horizonStart: today,
+                            horizonEnd: horizonEnd,
+                            usedMinutesByDay: &usedMinutesByDay,
+                            accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+                        )
                     }
                 } else {
                     let created = TaskOccurrence(
@@ -980,7 +1077,14 @@ enum SmartScheduler {
                     )
                     context.insert(created)
                     occurrencesMap[mapKey] = created
-                    usedMinutesByDay[day, default: 0] += created.effectiveLoadMinutes
+                    recordOccurrenceLoad(
+                        created,
+                        on: day,
+                        horizonStart: today,
+                        horizonEnd: horizonEnd,
+                        usedMinutesByDay: &usedMinutesByDay,
+                        accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+                    )
                 }
             }
             return
@@ -1011,9 +1115,14 @@ enum SmartScheduler {
             if let existing = occurrencesMap[mapKey] {
                 if existing.status == .pending && !existing.isManuallyPinned {
                     existing.setScheduledDay(target, calendar: calendar)
-                    if target <= horizonEnd {
-                        usedMinutesByDay[target, default: 0] += existing.effectiveLoadMinutes
-                    }
+                    recordOccurrenceLoad(
+                        existing,
+                        on: target,
+                        horizonStart: today,
+                        horizonEnd: horizonEnd,
+                        usedMinutesByDay: &usedMinutesByDay,
+                        accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+                    )
                 }
             } else {
                 let alreadyDone = isOnceTemplateCompleted(template, survivingOccurrences: survivingOccurrences)
@@ -1028,9 +1137,14 @@ enum SmartScheduler {
                     )
                     context.insert(created)
                     occurrencesMap[mapKey] = created
-                    if target <= horizonEnd {
-                        usedMinutesByDay[target, default: 0] += created.effectiveLoadMinutes
-                    }
+                    recordOccurrenceLoad(
+                        created,
+                        on: target,
+                        horizonStart: today,
+                        horizonEnd: horizonEnd,
+                        usedMinutesByDay: &usedMinutesByDay,
+                        accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+                    )
                 }
             }
             return
@@ -1096,7 +1210,14 @@ enum SmartScheduler {
                             }
                         }
                         existing.setScheduledDay(destination, calendar: calendar)
-                        usedMinutesByDay[destination, default: 0] += existing.effectiveLoadMinutes
+                        recordOccurrenceLoad(
+                            existing,
+                            on: destination,
+                            horizonStart: today,
+                            horizonEnd: horizonEnd,
+                            usedMinutesByDay: &usedMinutesByDay,
+                            accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+                        )
                     }
                 } else if pinnedDay >= today && pinnedDay <= horizonEnd {
                     var destination = pinnedDay
@@ -1117,7 +1238,14 @@ enum SmartScheduler {
                     )
                     context.insert(created)
                     occurrencesMap[mapKey] = created
-                    usedMinutesByDay[destination, default: 0] += created.effectiveLoadMinutes
+                    recordOccurrenceLoad(
+                        created,
+                        on: destination,
+                        horizonStart: today,
+                        horizonEnd: horizonEnd,
+                        usedMinutesByDay: &usedMinutesByDay,
+                        accountedLoadByOccurrenceID: &accountedLoadByOccurrenceID
+                    )
                 }
             }
 

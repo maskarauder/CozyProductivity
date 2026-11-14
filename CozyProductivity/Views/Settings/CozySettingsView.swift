@@ -606,9 +606,22 @@ struct CozySettingsView: View {
             Picker("Connection Mode", selection: Binding(
                 get: { preferences.googleSyncMode },
                 set: { mode in
-                    preferences.googleSyncMode = mode
-                    try? modelContext.save()
-                    onScheduleSettingsChanged()
+                    guard mode != preferences.googleSyncMode else { return }
+                    Task { @MainActor in
+                        if mode == .iosGoogleAccount && (preferences.useGoogleCalendarSync || preferences.pushTasksToGoogleCalendar) {
+                            _ = await CalendarFreeTimeService.shared.requestAccess()
+                        }
+                        preferences.googleSyncMode = mode
+                        try? modelContext.save()
+                        if preferences.pushTasksToGoogleCalendar || preferences.hasPendingCalendarCleanup {
+                            _ = await googleService.syncCalendarsAndRebalance(
+                                context: modelContext,
+                                preferences: preferences,
+                                referenceDate: DateHelpers.logicalToday()
+                            )
+                        }
+                        onScheduleSettingsChanged()
+                    }
                 }
             )) {
                 ForEach(GoogleCalendarSyncMode.allCases) { mode in
@@ -660,8 +673,22 @@ struct CozySettingsView: View {
                         if enabled && preferences.googleSyncMode == .iosGoogleAccount {
                             _ = await CalendarFreeTimeService.shared.requestAccess()
                         }
+                        if !enabled {
+                            if preferences.googleSyncMode == .oauthREST {
+                                preferences.needsGoogleOAuthChannelSweep = true
+                            } else {
+                                preferences.needsGoogleBridgeChannelSweep = true
+                            }
+                        }
                         preferences.pushTasksToGoogleCalendar = enabled
                         try? modelContext.save()
+                        if !enabled && preferences.hasPendingCalendarCleanup {
+                            _ = await googleService.pushOccurrenceChangesWithoutRebalance(
+                                context: modelContext,
+                                preferences: preferences,
+                                referenceDate: DateHelpers.logicalToday()
+                            )
+                        }
                         onScheduleSettingsChanged()
                     }
                 }
@@ -796,7 +823,23 @@ struct CozySettingsView: View {
                         .foregroundStyle(CozyTheme.deepRose)
                     Spacer()
                     Button("Disconnect") {
-                        googleService.signOut()
+                        Task { @MainActor in
+                            if preferences.pushTasksToGoogleCalendar {
+                                _ = try? await googleService.pushAndMergeOccurrencesToGoogleAPI(
+                                    occurrences: GoogleCalendarService.fetchOccurrencesForCalendarSync(
+                                        context: modelContext,
+                                        today: DateHelpers.logicalToday()
+                                    ),
+                                    busyIntervalsByDay: [:],
+                                    preferences: preferences,
+                                    today: DateHelpers.logicalToday(),
+                                    allowSlotChangingWrites: false,
+                                    cleanupOnly: true
+                                )
+                            }
+                            googleService.signOut(preferences: preferences)
+                            try? modelContext.save()
+                        }
                     }
                     .font(.caption.weight(.bold))
                     .foregroundStyle(CozyTheme.inkSecondary)
@@ -925,9 +968,17 @@ struct CozySettingsView: View {
                             let granted = await CalendarFreeTimeService.shared.requestAccess()
                             preferences.pushTasksToAppleCalendar = granted
                         } else {
+                            preferences.needsAppleChannelSweep = true
                             preferences.pushTasksToAppleCalendar = false
                         }
                         try? modelContext.save()
+                        if !enabled && preferences.hasPendingCalendarCleanup {
+                            _ = await googleService.pushOccurrenceChangesWithoutRebalance(
+                                context: modelContext,
+                                preferences: preferences,
+                                referenceDate: DateHelpers.logicalToday()
+                            )
+                        }
                         onScheduleSettingsChanged()
                     }
                 }

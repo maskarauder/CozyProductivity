@@ -203,8 +203,8 @@ enum StreakAndBonusService {
 
     // MARK: - Incremental Historical Streak Checkpoint
 
-    /// Summarizes immutable completed/missed history strictly before `operationalCutoff` at most once per day
-    /// so operational views only need to load recent + pending occurrences.
+    /// Summarizes immutable completed/missed history strictly before `operationalCutoff` incrementally
+    /// so operational views and daily archive updates run in bounded memory without scanning from day 0.
     static func refreshHistoricalArchiveIfNeeded(
         context: ModelContext,
         preferences: CozyPreferences,
@@ -226,17 +226,43 @@ enum StreakAndBonusService {
             return
         }
 
-        // Include an 8-day upper margin on `scheduledDate` so any bonus occurrence completed on `<= archiveThroughDay`
+        // Include a 9-day upper margin on `scheduledDate` so any bonus occurrence completed on `<= archiveThroughDay`
         // (originally scheduled up to 7 days later) is captured accurately.
-        let upperFetchBound = DateHelpers.addDays(8, to: cutoffStart, calendar: calendar)
+        let upperFetchBound = DateHelpers.addDays(9, to: archiveThroughDay, calendar: calendar)
         let skippedRaw = OccurrenceStatus.skipped.rawValue
-        let descriptor = FetchDescriptor<TaskOccurrence>(
-            predicate: #Predicate<TaskOccurrence> { occ in
-                occ.statusRaw != skippedRaw && occ.scheduledDate < upperFetchBound
-            }
-        )
-        let candidates = (try? context.fetch(descriptor)) ?? []
 
+        // Determine whether we can extend incrementally from `existing.archivedThroughDayKey`!
+        let incrementalStartDay: Date? = {
+            guard let existing = preferences.historicalStreakArchive,
+                  existing.optionalBonusTasksEnabled == bonusEnabled,
+                  let prevEndDay = DateHelpers.date(fromDayKey: existing.archivedThroughDayKey, calendar: calendar),
+                  prevEndDay < archiveThroughDay else {
+                return nil
+            }
+            return DateHelpers.addDays(1, to: prevEndDay, calendar: calendar)
+        }()
+
+        let candidates: [TaskOccurrence]
+        if let deltaStart = incrementalStartDay {
+            let lowerFetchBound = DateHelpers.addDays(-3, to: deltaStart, calendar: calendar)
+            let descriptor = FetchDescriptor<TaskOccurrence>(
+                predicate: #Predicate<TaskOccurrence> { occ in
+                    occ.statusRaw != skippedRaw
+                        && occ.scheduledDate >= lowerFetchBound
+                        && occ.scheduledDate <= upperFetchBound
+                }
+            )
+            candidates = (try? context.fetch(descriptor)) ?? []
+        } else {
+            let descriptor = FetchDescriptor<TaskOccurrence>(
+                predicate: #Predicate<TaskOccurrence> { occ in
+                    occ.statusRaw != skippedRaw && occ.scheduledDate <= upperFetchBound
+                }
+            )
+            candidates = (try? context.fetch(descriptor)) ?? []
+        }
+
+        let lowerEvalDay = incrementalStartDay
         var baseTotalByDay: [Date: Int] = [:]
         var baseDoneByDay: [Date: Int] = [:]
         var bonusDoneByDay: [Date: Int] = [:]
@@ -244,13 +270,15 @@ enum StreakAndBonusService {
 
         for occ in candidates where occ.status != .skipped {
             if let bDay = occ.bonusDay(calendar: calendar) {
-                if occ.isCompleted && bDay <= archiveThroughDay {
+                let aboveLower = lowerEvalDay.map { bDay >= $0 } ?? true
+                if occ.isCompleted && aboveLower && bDay <= archiveThroughDay {
                     bonusDoneByDay[bDay, default: 0] += 1
                     trackedDays.insert(bDay)
                 }
             } else {
                 let sDay = occ.scheduledDay(calendar: calendar)
-                if sDay <= archiveThroughDay {
+                let aboveLower = lowerEvalDay.map { sDay >= $0 } ?? true
+                if aboveLower && sDay <= archiveThroughDay {
                     baseTotalByDay[sDay, default: 0] += 1
                     if occ.isCompleted {
                         baseDoneByDay[sDay, default: 0] += 1
@@ -260,11 +288,14 @@ enum StreakAndBonusService {
             }
         }
 
-        var archivedBase = 0
-        var archivedSilver = 0
-        var archivedGold = 0
-        var summaries: [Date: DayAchievementSummary] = [:]
+        let priorArchive = incrementalStartDay != nil ? preferences.historicalStreakArchive : nil
+        var archivedBase = priorArchive?.archivedBaseDays ?? 0
+        var archivedSilver = priorArchive?.archivedSilverDays ?? 0
+        var archivedGold = priorArchive?.archivedGoldDays ?? 0
+        var runningStreak = priorArchive?.streakEnteringNextDay ?? 0
+        var bestStreak = priorArchive?.longestStreakThroughArchive ?? 0
 
+        var summaries: [Date: DayAchievementSummary] = [:]
         for day in trackedDays {
             let summary = DayAchievementSummary(
                 date: day,
@@ -282,9 +313,14 @@ enum StreakAndBonusService {
             }
         }
 
-        var runningStreak = 0
-        var bestStreak = 0
-        if let earliest = trackedDays.min(), earliest <= archiveThroughDay {
+        let scanStartDay: Date? = {
+            if let deltaStart = incrementalStartDay {
+                return deltaStart
+            }
+            return trackedDays.min()
+        }()
+
+        if let earliest = scanStartDay, earliest <= archiveThroughDay {
             let span = max(0, DateHelpers.daysBetween(earliest, and: archiveThroughDay, calendar: calendar))
             for offset in 0...span {
                 let day = DateHelpers.addDays(offset, to: earliest, calendar: calendar)

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftData
 import UserNotifications
 
 private final class ForegroundNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
@@ -23,6 +24,28 @@ final class NotificationManager {
 
     private init() {
         UNUserNotificationCenter.current().delegate = foregroundDelegate
+    }
+
+    /// Fetches only the bounded occurrence window needed to build daily, weekly, and monthly notification digests.
+    static func fetchOccurrencesForSummarySync(
+        context: ModelContext,
+        now: Date = Date(),
+        calendar: Calendar = DateHelpers.calendar
+    ) -> [TaskOccurrence] {
+        let logicalNow = DateHelpers.logicalDay(for: now, calendar: calendar)
+        let monthStart = DateHelpers.monthWindow(containing: logicalNow, calendar: calendar).start
+        let weekStart = DateHelpers.weekWindow(containing: logicalNow, calendar: calendar).start
+        let earliest = min(monthStart, weekStart)
+        let lowerBound = DateHelpers.addDays(-35, to: earliest, calendar: calendar)
+        let upperBound = DateHelpers.addDays(60, to: logicalNow, calendar: calendar)
+
+        let descriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                (occ.scheduledDate >= lowerBound && occ.scheduledDate <= upperBound)
+                    || occ.bonusForDate != nil
+            }
+        )
+        return (try? context.fetch(descriptor)) ?? []
     }
 
     func refreshAuthorizationStatus() async {

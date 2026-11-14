@@ -62,6 +62,7 @@ struct CalendarSyncReport {
     let upsertedCount: Int
     let removedCount: Int
     let failedCount: Int
+    let deferredCount: Int
     let usedCachedBusySnapshot: Bool
     let statusMessage: String
 
@@ -70,6 +71,7 @@ struct CalendarSyncReport {
         upsertedCount: Int,
         removedCount: Int,
         failedCount: Int = 0,
+        deferredCount: Int = 0,
         usedCachedBusySnapshot: Bool = false,
         statusMessage: String
     ) {
@@ -77,9 +79,17 @@ struct CalendarSyncReport {
         self.upsertedCount = upsertedCount
         self.removedCount = removedCount
         self.failedCount = failedCount
+        self.deferredCount = deferredCount
         self.usedCachedBusySnapshot = usedCachedBusySnapshot
         self.statusMessage = statusMessage
     }
+}
+
+struct ManagedGoogleEventSummary: Equatable {
+    let eventID: String
+    let occurrenceID: UUID?
+    let start: GoogleEventDateTimeDTO?
+    let end: GoogleEventDateTimeDTO?
 }
 
 enum GoogleCalendarError: LocalizedError {
@@ -127,12 +137,20 @@ private final class WebAuthPresentationAnchorProvider: NSObject, ASWebAuthentica
 @MainActor
 @Observable
 final class GoogleCalendarService {
+    typealias HTTPDataLoader = @MainActor (URLRequest) async throws -> (Data, URLResponse)
+
     static let shared = GoogleCalendarService()
+    nonisolated static let defaultMaxCachedBusySnapshotAgeSeconds: TimeInterval = 6 * 3600
 
     private static let tokenKeychainAccount = "google_calendar_oauth_token"
     private static let maxPaginationPages = 50
     private let presentationProvider = WebAuthPresentationAnchorProvider()
     private var activeAuthSession: ASWebAuthenticationSession?
+    private let httpLoader: HTTPDataLoader
+    private let freeTimeService: CalendarFreeTimeService
+    private let persistTokensToKeychain: Bool
+
+    var maxCachedBusySnapshotAgeSeconds: TimeInterval = GoogleCalendarService.defaultMaxCachedBusySnapshotAgeSeconds
 
     // Serialized sync coordinator state: prevents concurrent overlapping syncs and coalesces mid-flight edits
     private struct QueuedSyncRequest {
@@ -151,7 +169,24 @@ final class GoogleCalendarService {
     var lastSyncStatusMessage: String?
 
     init() {
+        self.httpLoader = { request in
+            try await URLSession.shared.data(for: request)
+        }
+        self.freeTimeService = CalendarFreeTimeService.shared
+        self.persistTokensToKeychain = true
         self.token = KeychainHelper.loadCodable(GoogleOAuthToken.self, account: Self.tokenKeychainAccount)
+    }
+
+    init(
+        httpLoader: @escaping HTTPDataLoader,
+        initialToken: GoogleOAuthToken? = nil,
+        freeTimeService: CalendarFreeTimeService? = nil,
+        persistTokensToKeychain: Bool = false
+    ) {
+        self.httpLoader = httpLoader
+        self.freeTimeService = freeTimeService ?? CalendarFreeTimeService.shared
+        self.persistTokensToKeychain = persistTokensToKeychain
+        self.token = initialToken
     }
 
     var isSignedInWithOAuth: Bool {
@@ -174,9 +209,14 @@ final class GoogleCalendarService {
 
     // MARK: - OAuth 2.0 PKCE Sign-In & Sign-Out
 
-    func signOut() {
+    func signOut(preferences: CozyPreferences? = nil) {
+        if let preferences {
+            preferences.needsGoogleOAuthChannelSweep = true
+        }
         token = nil
-        KeychainHelper.delete(account: Self.tokenKeychainAccount)
+        if persistTokensToKeychain {
+            KeychainHelper.delete(account: Self.tokenKeychainAccount)
+        }
         lastSyncStatusMessage = "Disconnected Google OAuth account."
     }
 
@@ -255,8 +295,35 @@ final class GoogleCalendarService {
         }
 
         self.token = exchangedToken
-        _ = KeychainHelper.saveCodable(exchangedToken, account: Self.tokenKeychainAccount)
+        if persistTokensToKeychain {
+            _ = KeychainHelper.saveCodable(exchangedToken, account: Self.tokenKeychainAccount)
+        }
         lastSyncStatusMessage = "Signed in as \(exchangedToken.accountSummary ?? "Google Calendar") 🌸"
+    }
+
+    // MARK: - Scoped SwiftData Fetch for Calendar Sync
+
+    /// Fetches only occurrences inside `[today - 3d ... today + 16d]`, bonus occurrences, or out-of-window/skipped items
+    /// that still hold a remote Google/EventKit identifier requiring cleanup.
+    static func fetchOccurrencesForCalendarSync(
+        context: ModelContext,
+        today referenceDate: Date,
+        calendar: Calendar = DateHelpers.calendar
+    ) -> [TaskOccurrence] {
+        let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
+        let lowerBound = DateHelpers.addDays(-3, to: today, calendar: calendar)
+        let upperBound = DateHelpers.addDays(16, to: today, calendar: calendar)
+
+        let descriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                (occ.scheduledDate >= lowerBound && occ.scheduledDate <= upperBound)
+                    || occ.bonusForDate != nil
+                    || occ.googleCalendarEventId != nil
+                    || occ.syncedEKEventIdentifier != nil
+                    || occ.appleCalendarEventIdentifier != nil
+            }
+        )
+        return (try? context.fetch(descriptor)) ?? []
     }
 
     // MARK: - Unified Serialized Sync Coordinator (Google & Apple)
@@ -278,7 +345,7 @@ final class GoogleCalendarService {
         )
     }
 
-    /// Pushes task completion (✅), manual date moves, bonus swaps, or deletions to Google and/or Apple Calendars
+    /// Pushes task completion (✅), manual date moves, bonus swaps, mode-switch cleanups, or deletions to Google and/or Apple Calendars
     /// without re-running `SmartScheduler.rebalance` so Today's remaining checklist stays untouched.
     func pushOccurrenceChangesWithoutRebalance(
         context: ModelContext,
@@ -286,7 +353,7 @@ final class GoogleCalendarService {
         referenceDate: Date = Date(),
         calendar: Calendar = DateHelpers.calendar
     ) async -> CalendarSyncReport {
-        guard preferences.hasAnyCalendarPushEnabled else {
+        guard preferences.hasAnyCalendarPushEnabled || preferences.hasPendingCalendarCleanup else {
             return CalendarSyncReport(
                 mergedBusyByDay: [:],
                 upsertedCount: 0,
@@ -372,19 +439,22 @@ final class GoogleCalendarService {
         calendar: Calendar,
         includeRebalance: Bool
     ) async -> CalendarSyncReport {
+        CozyDataMigrator.migrateIfNeeded(context: context, preferences: preferences, calendar: calendar)
+
         let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
         let horizonEnd = DateHelpers.addDays(SmartScheduler.defaultHorizonDays - 1, to: today, calendar: calendar)
 
         let readResult = await collectMergedBusyIntervals(
             from: today,
             to: horizonEnd,
+            now: referenceDate,
             preferences: preferences,
             calendar: calendar
         )
         var statusParts = readResult.statusParts
 
         if includeRebalance {
-            if readResult.deferRebalanceDueToReadFailure {
+            if readResult.hasUnavailableBusySource {
                 statusParts.append("Deferred schedule rebalance until calendar busy times can be read")
             } else {
                 SmartScheduler.rebalance(
@@ -397,20 +467,27 @@ final class GoogleCalendarService {
             }
         }
 
+        let allowSlotChangingWrites = !readResult.hasUnavailableBusySource
         let pushResult = await pushOccurrencesToEnabledCalendars(
             context: context,
             combinedIntervalsByDay: readResult.combinedIntervalsByDay,
             preferences: preferences,
             today: today,
+            allowSlotChangingWrites: allowSlotChangingWrites,
             calendar: calendar
         )
         statusParts.append(contentsOf: pushResult.statusParts)
 
         if includeRebalance {
-            let finalOccurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
+            let digestOccurrences = NotificationManager.fetchOccurrencesForSummarySync(
+                context: context,
+                now: referenceDate,
+                calendar: calendar
+            )
             await NotificationManager.shared.syncSummaryNotifications(
                 preferences: preferences,
-                occurrences: finalOccurrences,
+                occurrences: digestOccurrences,
+                now: referenceDate,
                 calendar: calendar
             )
         }
@@ -434,6 +511,7 @@ final class GoogleCalendarService {
             upsertedCount: pushResult.upsertedCount,
             removedCount: pushResult.removedCount,
             failedCount: pushResult.failedCount,
+            deferredCount: pushResult.deferredCount,
             usedCachedBusySnapshot: readResult.usedCachedSnapshot,
             statusMessage: summaryText
         )
@@ -442,25 +520,25 @@ final class GoogleCalendarService {
     private func collectMergedBusyIntervals(
         from today: Date,
         to horizonEnd: Date,
+        now referenceNow: Date,
         preferences: CozyPreferences,
         calendar: Calendar
     ) async -> (
         combinedIntervalsByDay: [Date: [(Date, Date)]],
         mergedBusyMinutesByDay: [Date: Int],
         usedCachedSnapshot: Bool,
-        deferRebalanceDueToReadFailure: Bool,
+        hasUnavailableBusySource: Bool,
         statusParts: [String]
     ) {
         var intervalSources: [[Date: [(Date, Date)]]] = []
-        var fallbackMinuteOverlay: [Date: Int] = [:]
         var usedCachedSnapshot = false
-        var deferRebalanceDueToReadFailure = false
+        var hasUnavailableBusySource = false
         var statusParts: [String] = []
 
         if preferences.useCalendarSync {
-            CalendarFreeTimeService.shared.refreshAuthorizationStatus()
-            if CalendarFreeTimeService.shared.hasReadAccess {
-                let appleIntervals = CalendarFreeTimeService.shared.busyIntervalsByDay(
+            freeTimeService.refreshAuthorizationStatus()
+            if freeTimeService.hasReadAccess {
+                let appleIntervals = freeTimeService.busyIntervalsByDay(
                     from: today,
                     to: horizonEnd,
                     wakingStartHour: preferences.wakingStartHour,
@@ -470,7 +548,7 @@ final class GoogleCalendarService {
                 intervalSources.append(appleIntervals)
             } else {
                 statusParts.append("Apple Calendar read skipped (permission not granted)")
-                deferRebalanceDueToReadFailure = true
+                hasUnavailableBusySource = true
             }
         }
 
@@ -492,48 +570,45 @@ final class GoogleCalendarService {
                     )
                     intervalSources.append(googleIntervals)
 
-                    // Persist fresh last-known-good busy snapshot keyed by destination
-                    let minutesMap = CalendarFreeTimeService.mergeBusyIntervalsByDay([googleIntervals])
-                    var keyedMinutes: [String: Int] = [:]
-                    for (day, mins) in minutesMap {
-                        keyedMinutes[DateHelpers.dayKeyString(for: day, calendar: calendar)] = mins
-                    }
-                    preferences.cachedGoogleBusySnapshot = CozyPreferences.CachedGoogleBusySnapshot(
+                    // Persist complete start/end busy intervals keyed by destination + freshness timestamp
+                    preferences.cachedGoogleBusySnapshot = CozyPreferences.CachedGoogleBusySnapshot.make(
                         destinationKey: destinationKey,
-                        fetchedAt: Date(),
-                        busyMinutesByDayKey: keyedMinutes
+                        fetchedAt: referenceNow,
+                        intervalsByDay: googleIntervals,
+                        calendar: calendar
                     )
 
                     let busyDayCount = googleIntervals.values.filter { !$0.isEmpty }.count
                     statusParts.append("Read \(busyDayCount) Google busy day\(busyDayCount == 1 ? "" : "s")")
                 } catch {
-                    if let cached = preferences.cachedGoogleBusySnapshot,
-                       cached.destinationKey == destinationKey {
-                        for (dayKey, mins) in cached.busyMinutesByDayKey where mins > 0 {
-                            if let dayDate = DateHelpers.date(fromDayKey: dayKey, calendar: calendar),
-                               dayDate >= today && dayDate <= horizonEnd {
-                                fallbackMinuteOverlay[dayDate, default: 0] = max(fallbackMinuteOverlay[dayDate, default: 0], mins)
-                            }
-                        }
+                    if let cachedIntervals = preferences.cachedGoogleBusySnapshot?.freshIntervalsByDay(
+                        forDestination: destinationKey,
+                        maxAgeSeconds: maxCachedBusySnapshotAgeSeconds,
+                        now: referenceNow,
+                        calendar: calendar
+                    ) {
+                        let clippedToHorizon = cachedIntervals.filter { $0.key >= today && $0.key <= horizonEnd }
+                        intervalSources.append(clippedToHorizon)
                         usedCachedSnapshot = true
-                        statusParts.append("Google read failed (\(error.localizedDescription)); using cached busy snapshot")
+                        statusParts.append("Google read failed (\(error.localizedDescription)); using fresh cached busy intervals")
                     } else {
-                        deferRebalanceDueToReadFailure = true
+                        hasUnavailableBusySource = true
                         statusParts.append("Google read failed: \(error.localizedDescription)")
                     }
                 }
 
             case .iosGoogleAccount:
-                CalendarFreeTimeService.shared.refreshAuthorizationStatus()
-                if !CalendarFreeTimeService.shared.hasReadAccess {
-                    deferRebalanceDueToReadFailure = true
+                freeTimeService.refreshAuthorizationStatus()
+                if !freeTimeService.hasReadAccess {
+                    hasUnavailableBusySource = true
                     statusParts.append("Grant Calendar Full Access in Settings to read Google Bridge")
                 } else {
-                    let cals = CalendarFreeTimeService.shared.googleAccountCalendars()
+                    let cals = freeTimeService.googleAccountCalendars()
                     if cals.isEmpty {
+                        hasUnavailableBusySource = true
                         statusParts.append("No Google calendar found in iPhone Accounts yet")
                     } else {
-                        let googleBridgeIntervals = CalendarFreeTimeService.shared.googleBridgeBusyIntervalsByDay(
+                        let googleBridgeIntervals = freeTimeService.googleBridgeBusyIntervalsByDay(
                             from: today,
                             to: horizonEnd,
                             wakingStartHour: preferences.wakingStartHour,
@@ -548,16 +623,13 @@ final class GoogleCalendarService {
         }
 
         let combinedIntervalsByDay = CalendarFreeTimeService.combineRawIntervalsByDay(intervalSources)
-        var mergedBusyMinutesByDay = CalendarFreeTimeService.mergeBusyIntervalsByDay(intervalSources)
-        for (day, cachedMins) in fallbackMinuteOverlay {
-            mergedBusyMinutesByDay[day] = max(mergedBusyMinutesByDay[day] ?? 0, cachedMins)
-        }
+        let mergedBusyMinutesByDay = CalendarFreeTimeService.mergeBusyIntervalsByDay(intervalSources)
 
         return (
             combinedIntervalsByDay,
             mergedBusyMinutesByDay,
             usedCachedSnapshot,
-            deferRebalanceDueToReadFailure,
+            hasUnavailableBusySource,
             statusParts
         )
     }
@@ -567,15 +639,79 @@ final class GoogleCalendarService {
         combinedIntervalsByDay: [Date: [(Date, Date)]],
         preferences: CozyPreferences,
         today: Date,
+        allowSlotChangingWrites: Bool,
         calendar: Calendar
-    ) async -> (upsertedCount: Int, removedCount: Int, failedCount: Int, statusParts: [String]) {
+    ) async -> (upsertedCount: Int, removedCount: Int, failedCount: Int, deferredCount: Int, statusParts: [String]) {
         var totalUpserted = 0
         var totalRemoved = 0
         var totalFailed = 0
+        var totalDeferred = 0
         var statusParts: [String] = []
 
-        let latestOccurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
+        let latestOccurrences = Self.fetchOccurrencesForCalendarSync(
+            context: context,
+            today: today,
+            calendar: calendar
+        )
         var googleBridgeCalendarID: String? = nil
+
+        // 0A. Clean up inactive Google Bridge channel if user switched to OAuth REST or turned Google push OFF
+        let googleBridgeActive = preferences.pushTasksToGoogleCalendar && preferences.googleSyncMode == .iosGoogleAccount
+        let hasGoogleBridgeLeftovers = preferences.needsGoogleBridgeChannelSweep
+            || latestOccurrences.contains(where: { $0.syncedEKEventIdentifier != nil })
+            || preferences.pendingEKDeletions.contains(where: { $0.channelRaw == CozySyncChannel.googleBridge.rawValue })
+
+        if !googleBridgeActive && hasGoogleBridgeLeftovers {
+            let cleaned = freeTimeService.cleanupChannelEvents(
+                channel: .googleBridge,
+                occurrences: latestOccurrences,
+                preferences: preferences,
+                today: today,
+                calendar: calendar
+            )
+            totalRemoved += cleaned.removed
+            totalFailed += cleaned.failed
+            try? context.save()
+        }
+
+        // 0B. Clean up inactive Google OAuth channel if user switched to iOS Google Bridge or turned Google push OFF
+        let googleOAuthActive = preferences.pushTasksToGoogleCalendar && preferences.googleSyncMode == .oauthREST
+        let hasGoogleOAuthLeftovers = preferences.needsGoogleOAuthChannelSweep
+            || latestOccurrences.contains(where: { $0.googleCalendarEventId != nil })
+            || !preferences.pendingGoogleDeletions.isEmpty
+
+        var shouldSweepStrandedOAuthViaBridge = false
+        if !googleOAuthActive && hasGoogleOAuthLeftovers {
+            if isSignedInWithOAuth {
+                do {
+                    let cleaned = try await pushAndMergeOccurrencesToGoogleAPI(
+                        occurrences: latestOccurrences,
+                        busyIntervalsByDay: [:],
+                        preferences: preferences,
+                        today: today,
+                        allowSlotChangingWrites: false,
+                        cleanupOnly: true,
+                        calendar: calendar
+                    )
+                    totalRemoved += cleaned.removed
+                    totalFailed += cleaned.failed
+                    if cleaned.failed == 0 {
+                        preferences.needsGoogleOAuthChannelSweep = false
+                    }
+                    try? context.save()
+                } catch {
+                    totalFailed += 1
+                    shouldSweepStrandedOAuthViaBridge = googleBridgeActive
+                }
+            } else {
+                // OAuth credentials are no longer present; if Google Bridge is active on the same Google account,
+                // sweep stranded `.googleOAuth` events via EventKit and clear stale OAuth metadata upon commit.
+                shouldSweepStrandedOAuthViaBridge = googleBridgeActive
+                if !googleBridgeActive {
+                    preferences.needsGoogleOAuthChannelSweep = false
+                }
+            }
+        }
 
         // 1. Push & sync scheduled Cozy Tasks to Google Calendar if enabled
         if preferences.pushTasksToGoogleCalendar {
@@ -587,13 +723,18 @@ final class GoogleCalendarService {
                         busyIntervalsByDay: combinedIntervalsByDay,
                         preferences: preferences,
                         today: today,
+                        allowSlotChangingWrites: allowSlotChangingWrites,
+                        cleanupOnly: false,
                         calendar: calendar
                     )
                     totalUpserted += pushed.upserted
                     totalRemoved += pushed.removed
                     totalFailed += pushed.failed
+                    totalDeferred += pushed.deferred
                     try? context.save()
-                    if pushed.failed > 0 {
+                    if pushed.deferred > 0 {
+                        statusParts.append("Deferred \(pushed.deferred) Google slot write\(pushed.deferred == 1 ? "" : "s") until busy times can be read")
+                    } else if pushed.failed > 0 {
                         statusParts.append("Google Calendar synced \(pushed.upserted) task\(pushed.upserted == 1 ? "" : "s") (\(pushed.failed) failed; will retry)")
                     } else {
                         statusParts.append("Synced \(pushed.upserted) task\(pushed.upserted == 1 ? "" : "s") to Google Calendar")
@@ -604,48 +745,83 @@ final class GoogleCalendarService {
                 }
 
             case .iosGoogleAccount:
-                googleBridgeCalendarID = CalendarFreeTimeService.shared.writableGoogleBridgeCalendar()?.calendarIdentifier
-                let pushed = CalendarFreeTimeService.shared.pushAndMergeViaGoogleBridge(
+                googleBridgeCalendarID = freeTimeService.writableGoogleBridgeCalendar()?.calendarIdentifier
+                let pushed = freeTimeService.pushAndMergeViaGoogleBridge(
                     occurrences: latestOccurrences,
                     busyIntervalsByDay: combinedIntervalsByDay,
                     preferences: preferences,
                     today: today,
+                    allowSlotChangingWrites: allowSlotChangingWrites,
+                    sweepStrandedOAuthEvents: shouldSweepStrandedOAuthViaBridge,
                     calendar: calendar
                 )
+                if shouldSweepStrandedOAuthViaBridge && pushed.failed == 0 && pushed.errorMessage == nil {
+                    preferences.needsGoogleOAuthChannelSweep = false
+                    for occ in latestOccurrences where occ.googleCalendarEventId != nil {
+                        occ.googleCalendarEventId = nil
+                        occ.googleSyncedDestination = nil
+                        if occ.lastCalendarSyncSignature?.hasPrefix("google-oauth|") == true {
+                            occ.lastCalendarSyncSignature = nil
+                        }
+                    }
+                }
                 totalUpserted += pushed.upserted
                 totalRemoved += pushed.removed
                 totalFailed += pushed.failed
+                totalDeferred += pushed.deferred
                 try? context.save()
                 if let err = pushed.errorMessage {
                     statusParts.append(err)
+                } else if pushed.deferred > 0 {
+                    statusParts.append("Deferred \(pushed.deferred) Google Bridge slot write\(pushed.deferred == 1 ? "" : "s") until busy times can be read")
                 } else if let calTitle = pushed.calendarTitle {
                     statusParts.append("Synced \(pushed.upserted) task\(pushed.upserted == 1 ? "" : "s") to \(calTitle)")
                 }
             }
         }
 
-        // 2. Push & sync scheduled Cozy Tasks to Apple Calendar if enabled
+        // 2. Push & sync scheduled Cozy Tasks to Apple Calendar if enabled (or clean up if turned OFF)
         if preferences.pushTasksToAppleCalendar {
-            let pushedApple = CalendarFreeTimeService.shared.syncOccurrencesToAppleCalendar(
+            let pushedApple = freeTimeService.syncOccurrencesToAppleCalendar(
                 occurrences: latestOccurrences,
                 busyIntervalsByDay: combinedIntervalsByDay,
                 preferences: preferences,
                 today: today,
                 avoidCalendarIdentifier: googleBridgeCalendarID,
+                allowSlotChangingWrites: allowSlotChangingWrites,
                 calendar: calendar
             )
             totalUpserted += pushedApple.upserted
             totalRemoved += pushedApple.removed
             totalFailed += pushedApple.failed
+            totalDeferred += pushedApple.deferred
             try? context.save()
             if let err = pushedApple.errorMessage {
                 statusParts.append(err)
+            } else if pushedApple.deferred > 0 {
+                statusParts.append("Deferred \(pushedApple.deferred) Apple Calendar slot write\(pushedApple.deferred == 1 ? "" : "s") until busy times can be read")
             } else if let appleCalTitle = pushedApple.calendarTitle {
                 statusParts.append("Synced \(pushedApple.upserted) task\(pushedApple.upserted == 1 ? "" : "s") to Apple Calendar (\(appleCalTitle))")
             }
+        } else {
+            let hasAppleLeftovers = preferences.needsAppleChannelSweep
+                || latestOccurrences.contains(where: { $0.appleCalendarEventIdentifier != nil })
+                || preferences.pendingEKDeletions.contains(where: { $0.channelRaw == CozySyncChannel.apple.rawValue })
+            if hasAppleLeftovers {
+                let cleanedApple = freeTimeService.cleanupChannelEvents(
+                    channel: .apple,
+                    occurrences: latestOccurrences,
+                    preferences: preferences,
+                    today: today,
+                    calendar: calendar
+                )
+                totalRemoved += cleanedApple.removed
+                totalFailed += cleanedApple.failed
+                try? context.save()
+            }
         }
 
-        return (totalUpserted, totalRemoved, totalFailed, statusParts)
+        return (totalUpserted, totalRemoved, totalFailed, totalDeferred, statusParts)
     }
 
     // MARK: - Google Calendar REST API v3 Paginated Read & Validated Push
@@ -693,8 +869,10 @@ final class GoogleCalendarService {
         busyIntervalsByDay: [Date: [(Date, Date)]],
         preferences: CozyPreferences,
         today referenceDate: Date = Date(),
+        allowSlotChangingWrites: Bool = true,
+        cleanupOnly: Bool = false,
         calendar: Calendar = DateHelpers.calendar
-    ) async throws -> (upserted: Int, removed: Int, failed: Int) {
+    ) async throws -> (upserted: Int, removed: Int, failed: Int, deferred: Int) {
         let accessToken = try await validAccessToken(clientID: preferences.googleClientID)
         let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
         let minSyncDay = DateHelpers.addDays(-1, to: today, calendar: calendar)
@@ -711,6 +889,7 @@ final class GoogleCalendarService {
         var upserted = 0
         var removed = 0
         var failed = 0
+        var deferred = 0
         var removedRemoteIDs: Set<String> = []
 
         func effectiveOccurrenceDay(_ occ: TaskOccurrence) -> Date {
@@ -720,30 +899,36 @@ final class GoogleCalendarService {
             return occ.scheduledDay(calendar: calendar)
         }
 
-        // 0. Detect account or destination calendar changes: migrate/invalidate stale mappings!
-        for occ in occurrences {
-            if let oldDest = occ.googleSyncedDestination, oldDest != destinationKey {
-                if let oldID = occ.googleCalendarEventId,
-                   let parsedOld = CozyPreferences.parseGoogleDestination(oldDest),
-                   parsedOld.accountKey == accountIdentity,
-                   parsedOld.calendarID != calID {
-                    var pending = preferences.pendingGoogleDeletions
-                    pending.append(.init(accountKey: accountIdentity, calendarID: parsedOld.calendarID, eventID: oldID))
-                    preferences.pendingGoogleDeletions = pending
+        // 0. Detect account or destination calendar changes when actively syncing OAuth: migrate/invalidate stale mappings!
+        if !cleanupOnly {
+            for occ in occurrences {
+                if let oldDest = occ.googleSyncedDestination, oldDest != destinationKey {
+                    if let oldID = occ.googleCalendarEventId,
+                       let parsedOld = CozyPreferences.parseGoogleDestination(oldDest),
+                       parsedOld.accountKey == accountIdentity,
+                       parsedOld.calendarID != calID {
+                        preferences.enqueueGoogleDeletion(
+                            .init(accountKey: accountIdentity, calendarID: parsedOld.calendarID, eventID: oldID)
+                        )
+                    }
+                    occ.googleCalendarEventId = nil
+                    occ.googleSyncedDestination = nil
+                    if occ.lastCalendarSyncSignature?.hasPrefix("google-bridge|") != true {
+                        occ.lastCalendarSyncSignature = nil
+                    }
+                } else if occ.googleSyncedDestination == nil && occ.googleCalendarEventId != nil {
+                    // Upgrade legacy occurrences without a recorded destination so signature checks include destinationKey
+                    if occ.lastCalendarSyncSignature?.hasPrefix("google-bridge|") != true {
+                        occ.lastCalendarSyncSignature = nil
+                    }
                 }
-                occ.googleCalendarEventId = nil
-                occ.googleSyncedDestination = nil
-                occ.lastCalendarSyncSignature = nil
-            } else if occ.googleSyncedDestination == nil && occ.googleCalendarEventId != nil {
-                // Upgrade legacy occurrences without a recorded destination so signature checks include destinationKey
-                occ.lastCalendarSyncSignature = nil
             }
         }
 
-        // 1. Drain persisted pending Google deletions (confirming each DELETE before removing from queue!)
-        let existingQueue = preferences.pendingGoogleDeletions
+        // 1. Drain persisted pending Google deletions against the LIVE queue so mid-await additions are never lost!
+        let itemsToAttempt = preferences.pendingGoogleDeletions
         var confirmedPendingDeletions: Set<CozyPreferences.PendingGoogleEventDeletion> = []
-        for item in existingQueue where item.accountKey.isEmpty || item.accountKey == accountIdentity {
+        for item in itemsToAttempt where item.accountKey.isEmpty || item.accountKey == accountIdentity {
             let itemEncodedCal = item.calendarID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? "primary"
             do {
                 try await deleteGoogleEvent(
@@ -760,23 +945,26 @@ final class GoogleCalendarService {
                 failed += 1
             }
         }
-        if !confirmedPendingDeletions.isEmpty {
-            preferences.pendingGoogleDeletions = existingQueue.filter { !confirmedPendingDeletions.contains($0) }
-        }
+        preferences.removeConfirmedGoogleDeletions(confirmedPendingDeletions)
 
-        let activeWindowOccurrences = occurrences
-            .filter { occ in
-                guard occ.status != .skipped else { return false }
-                let day = effectiveOccurrenceDay(occ)
-                return day >= minSyncDay && day <= maxSyncDay
-            }
-            .sorted {
-                let d0 = effectiveOccurrenceDay($0)
-                let d1 = effectiveOccurrenceDay($1)
-                if d0 != d1 { return d0 < d1 }
-                if $0.displayTitle != $1.displayTitle { return $0.displayTitle < $1.displayTitle }
-                return $0.id.uuidString < $1.id.uuidString
-            }
+        let activeWindowOccurrences: [TaskOccurrence]
+        if cleanupOnly {
+            activeWindowOccurrences = []
+        } else {
+            activeWindowOccurrences = occurrences
+                .filter { occ in
+                    guard occ.status != .skipped else { return false }
+                    let day = effectiveOccurrenceDay(occ)
+                    return day >= minSyncDay && day <= maxSyncDay
+                }
+                .sorted {
+                    let d0 = effectiveOccurrenceDay($0)
+                    let d1 = effectiveOccurrenceDay($1)
+                    if d0 != d1 { return d0 < d1 }
+                    if $0.displayTitle != $1.displayTitle { return $0.displayTitle < $1.displayTitle }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+        }
 
         let activeIDs = Set(activeWindowOccurrences.map(\.id))
         var preferredByOccID: [UUID: String] = [:]
@@ -790,19 +978,20 @@ final class GoogleCalendarService {
 
         // 2. Paginated scan of Cozy-managed remote events: deduplicate same-occurrence events & delete orphans!
         //    Note: throws if list request fails so transient network errors never corrupt state.
-        let managedEvents = try await fetchCozyManagedGoogleEvents(
+        let managedSummaries = try await fetchCozyManagedGoogleEventSummaries(
             calendarEncodedID: encodedCalID,
             from: minSyncDay,
             to: queryEnd,
             accessToken: accessToken
         )
 
-        let reconciliation = Self.reconcileRemoteManagedEvents(
-            managedEvents: managedEvents,
+        let reconciliation = Self.reconcileRemoteManagedEventSummaries(
+            managedEvents: managedSummaries,
             activeOccurrenceIDs: activeIDs,
             preferredEventIDByOccurrence: preferredByOccID
         )
         let remoteEventIDByOccID = reconciliation.canonicalEventIDByOccurrence
+        let remoteSummaryByOccID = reconciliation.canonicalEventByOccurrence
 
         for duplicateOrOrphanID in reconciliation.eventIDsToDelete where !removedRemoteIDs.contains(duplicateOrOrphanID) {
             do {
@@ -814,21 +1003,28 @@ final class GoogleCalendarService {
                 removedRemoteIDs.insert(duplicateOrOrphanID)
                 removed += 1
             } catch {
-                var pending = preferences.pendingGoogleDeletions
-                pending.append(.init(accountKey: accountIdentity, calendarID: calID, eventID: duplicateOrOrphanID))
-                preferences.pendingGoogleDeletions = pending
+                preferences.enqueueGoogleDeletion(
+                    .init(accountKey: accountIdentity, calendarID: calID, eventID: duplicateOrOrphanID)
+                )
                 failed += 1
             }
         }
 
-        // 3. Clean up skipped or out-of-window occurrences that still hold a googleCalendarEventId
+        // 3. Clean up skipped, out-of-window, or channel-retired occurrences that still hold a googleCalendarEventId
         //    (NEVER discard `occ.googleCalendarEventId` if `deleteGoogleEvent` fails!)
         for occ in occurrences where !activeIDs.contains(occ.id) {
             guard let existingEventID = occ.googleCalendarEventId, !existingEventID.isEmpty else { continue }
             if removedRemoteIDs.contains(existingEventID) {
                 occ.googleCalendarEventId = nil
                 occ.googleSyncedDestination = nil
-                occ.lastCalendarSyncSignature = nil
+                if occ.lastCalendarSyncSignature?.hasPrefix("google-bridge|") != true {
+                    occ.lastCalendarSyncSignature = nil
+                }
+                continue
+            }
+            if let parsedDest = CozyPreferences.parseGoogleDestination(occ.googleSyncedDestination),
+               !parsedDest.accountKey.isEmpty,
+               parsedDest.accountKey != accountIdentity {
                 continue
             }
             let targetCal = CozyPreferences.parseGoogleDestination(occ.googleSyncedDestination)?.calendarID ?? calID
@@ -842,26 +1038,62 @@ final class GoogleCalendarService {
                 removedRemoteIDs.insert(existingEventID)
                 occ.googleCalendarEventId = nil
                 occ.googleSyncedDestination = nil
-                occ.lastCalendarSyncSignature = nil
+                if occ.lastCalendarSyncSignature?.hasPrefix("google-bridge|") != true {
+                    occ.lastCalendarSyncSignature = nil
+                }
                 removed += 1
             } catch {
+                preferences.enqueueGoogleDeletion(
+                    .init(accountKey: accountIdentity, calendarID: targetCal, eventID: existingEventID)
+                )
                 failed += 1
             }
         }
 
+        if cleanupOnly {
+            return (0, removed, failed, 0)
+        }
+
         // 4. Upsert active occurrences idempotently with full HTTP status verification
+        //    When `allowSlotChangingWrites == false` (busy-time source unavailable without fresh intervals),
+        //    defer new/day-moving slot writes and ONLY apply in-place metadata/completion updates preserving existing times.
         for occ in activeWindowOccurrences {
             let effectiveDay = effectiveOccurrenceDay(occ)
-            let slot = CalendarFreeTimeService.assignSlotForTask(
-                on: effectiveDay,
-                durationMinutes: occ.displayDurationMinutes,
-                preferredStartHour: preferences.googleTaskPushStartHour,
-                wakingStartHour: preferences.wakingStartHour,
-                wakingEndHour: preferences.wakingEndHour,
-                existingBusyIntervals: placedByDay[effectiveDay] ?? [],
-                calendar: calendar
-            )
-            placedByDay[effectiveDay, default: []].append(slot)
+
+            if occ.googleCalendarEventId == nil, let matchedRemoteID = remoteEventIDByOccID[occ.id] {
+                occ.googleCalendarEventId = matchedRemoteID
+            }
+
+            let slot: (Date, Date)
+            if allowSlotChangingWrites {
+                let assigned = CalendarFreeTimeService.assignSlotForTask(
+                    on: effectiveDay,
+                    durationMinutes: occ.displayDurationMinutes,
+                    preferredStartHour: preferences.googleTaskPushStartHour,
+                    wakingStartHour: preferences.wakingStartHour,
+                    wakingEndHour: preferences.wakingEndHour,
+                    existingBusyIntervals: placedByDay[effectiveDay] ?? [],
+                    calendar: calendar
+                )
+                placedByDay[effectiveDay, default: []].append(assigned)
+                slot = assigned
+            } else {
+                guard
+                    occ.googleCalendarEventId != nil,
+                    let existingRemote = remoteSummaryByOccID[occ.id],
+                    let existingStartText = existingRemote.start?.dateTime,
+                    let existingEndText = existingRemote.end?.dateTime,
+                    let existingStart = Self.parseRFC3339(existingStartText),
+                    let existingEnd = Self.parseRFC3339(existingEndText),
+                    existingEnd > existingStart,
+                    DateHelpers.isSameDay(existingStart, effectiveDay, calendar: calendar)
+                else {
+                    deferred += 1
+                    continue
+                }
+                placedByDay[effectiveDay, default: []].append((existingStart, existingEnd))
+                slot = (existingStart, existingEnd)
+            }
 
             let deadlineSuffix = occ.effectiveHardDeadline(calendar: calendar).map {
                 " · Hard Deadline \(DateHelpers.shortMonthDayString(for: $0, calendar: calendar))"
@@ -879,10 +1111,6 @@ final class GoogleCalendarService {
                 end: slot.1,
                 timeZoneIdentifier: calendar.timeZone.identifier
             )
-
-            if occ.googleCalendarEventId == nil, let matchedRemoteID = remoteEventIDByOccID[occ.id] {
-                occ.googleCalendarEventId = matchedRemoteID
-            }
 
             let signature = Self.buildGoogleSyncSignature(destinationKey: destinationKey, payload: payload)
             if occ.googleCalendarEventId != nil,
@@ -905,7 +1133,7 @@ final class GoogleCalendarService {
                 patchReq.httpBody = patchBody
 
                 do {
-                    let (_, patchResp) = try await URLSession.shared.data(for: patchReq)
+                    let (_, patchResp) = try await httpLoader(patchReq)
                     if let http = patchResp as? HTTPURLResponse {
                         if (200...299).contains(http.statusCode) {
                             occ.googleSyncedDestination = destinationKey
@@ -913,8 +1141,12 @@ final class GoogleCalendarService {
                             upserted += 1
                             continue
                         } else if http.statusCode == 404 || http.statusCode == 410 {
-                            // Deleted remotely; fall through to idempotent POST/PUT creation
                             occ.googleCalendarEventId = nil
+                            if !allowSlotChangingWrites {
+                                deferred += 1
+                                continue
+                            }
+                            // Deleted remotely while slot writes ARE allowed: fall through to idempotent POST/PUT creation
                         } else {
                             failed += 1
                             continue
@@ -927,6 +1159,11 @@ final class GoogleCalendarService {
                     failed += 1
                     continue
                 }
+            }
+
+            guard allowSlotChangingWrites else {
+                deferred += 1
+                continue
             }
 
             if occ.googleCalendarEventId == nil {
@@ -946,7 +1183,7 @@ final class GoogleCalendarService {
                 postReq.httpBody = createBody
 
                 do {
-                    let (postData, postResp) = try await URLSession.shared.data(for: postReq)
+                    let (postData, postResp) = try await httpLoader(postReq)
                     guard let http = postResp as? HTTPURLResponse else {
                         failed += 1
                         continue
@@ -968,7 +1205,7 @@ final class GoogleCalendarService {
                         putReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
                         putReq.httpBody = createBody
 
-                        let (_, putResp) = try await URLSession.shared.data(for: putReq)
+                        let (_, putResp) = try await httpLoader(putReq)
                         if let putHTTP = putResp as? HTTPURLResponse, (200...299).contains(putHTTP.statusCode) {
                             occ.googleCalendarEventId = deterministicID
                             occ.googleSyncedDestination = destinationKey
@@ -986,15 +1223,15 @@ final class GoogleCalendarService {
             }
         }
 
-        return (upserted, removed, failed)
+        return (upserted, removed, failed, deferred)
     }
 
-    private func fetchCozyManagedGoogleEvents(
+    private func fetchCozyManagedGoogleEventSummaries(
         calendarEncodedID: String,
         from startDate: Date,
         to endDate: Date,
         accessToken: String
-    ) async throws -> [(eventID: String, occurrenceID: UUID?)] {
+    ) async throws -> [ManagedGoogleEventSummary] {
         let items = try await fetchAllGoogleEventPages(
             calendarEncodedID: calendarEncodedID,
             baseQueryItems: [
@@ -1006,7 +1243,7 @@ final class GoogleCalendarService {
             ],
             accessToken: accessToken
         )
-        return Self.extractCozyManagedEvents(fromItems: items)
+        return Self.extractCozyManagedEventSummaries(fromItems: items)
     }
 
     private func fetchAllGoogleEventPages(
@@ -1036,7 +1273,7 @@ final class GoogleCalendarService {
             req.httpMethod = "GET"
             req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
-            let (data, response) = try await URLSession.shared.data(for: req)
+            let (data, response) = try await httpLoader(req)
             guard let http = response as? HTTPURLResponse else {
                 throw GoogleCalendarError.apiError(-1, "Invalid HTTP response")
             }
@@ -1086,7 +1323,9 @@ final class GoogleCalendarService {
         )
         current = refreshed
         self.token = refreshed
-        _ = KeychainHelper.saveCodable(refreshed, account: Self.tokenKeychainAccount)
+        if persistTokensToKeychain {
+            _ = KeychainHelper.saveCodable(refreshed, account: Self.tokenKeychainAccount)
+        }
         return refreshed.accessToken
     }
 
@@ -1110,7 +1349,7 @@ final class GoogleCalendarService {
         ]
         req.httpBody = Self.formURLEncodedData(params)
 
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await httpLoader(req)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "Unknown OAuth error"
             throw GoogleCalendarError.tokenExchangeFailed(msg)
@@ -1151,7 +1390,7 @@ final class GoogleCalendarService {
         ]
         req.httpBody = Self.formURLEncodedData(params)
 
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await httpLoader(req)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "Refresh failed"
             throw GoogleCalendarError.tokenExchangeFailed(msg)
@@ -1180,7 +1419,7 @@ final class GoogleCalendarService {
         req.httpMethod = "GET"
         req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await httpLoader(req)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             return nil
         }
@@ -1204,7 +1443,7 @@ final class GoogleCalendarService {
         var req = URLRequest(url: url)
         req.httpMethod = "DELETE"
         req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await httpLoader(req)
         guard let http = response as? HTTPURLResponse else {
             throw GoogleCalendarError.apiError(-1, "Invalid DELETE response")
         }
@@ -1261,7 +1500,27 @@ final class GoogleCalendarService {
         activeOccurrenceIDs: Set<UUID>,
         preferredEventIDByOccurrence: [UUID: String]
     ) -> (canonicalEventIDByOccurrence: [UUID: String], eventIDsToDelete: [String]) {
-        var groupedByOcc: [UUID: [String]] = [:]
+        let summaries = managedEvents.map {
+            ManagedGoogleEventSummary(eventID: $0.eventID, occurrenceID: $0.occurrenceID, start: nil, end: nil)
+        }
+        let reconciled = reconcileRemoteManagedEventSummaries(
+            managedEvents: summaries,
+            activeOccurrenceIDs: activeOccurrenceIDs,
+            preferredEventIDByOccurrence: preferredEventIDByOccurrence
+        )
+        return (reconciled.canonicalEventIDByOccurrence, reconciled.eventIDsToDelete)
+    }
+
+    nonisolated static func reconcileRemoteManagedEventSummaries(
+        managedEvents: [ManagedGoogleEventSummary],
+        activeOccurrenceIDs: Set<UUID>,
+        preferredEventIDByOccurrence: [UUID: String]
+    ) -> (
+        canonicalEventByOccurrence: [UUID: ManagedGoogleEventSummary],
+        canonicalEventIDByOccurrence: [UUID: String],
+        eventIDsToDelete: [String]
+    ) {
+        var groupedByOcc: [UUID: [ManagedGoogleEventSummary]] = [:]
         var toDelete: [String] = []
 
         for item in managedEvents {
@@ -1269,27 +1528,30 @@ final class GoogleCalendarService {
                 toDelete.append(item.eventID)
                 continue
             }
-            if !groupedByOcc[occID, default: []].contains(item.eventID) {
-                groupedByOcc[occID, default: []].append(item.eventID)
+            if !groupedByOcc[occID, default: []].contains(where: { $0.eventID == item.eventID }) {
+                groupedByOcc[occID, default: []].append(item)
             }
         }
 
-        var canonical: [UUID: String] = [:]
-        for (occID, eventIDs) in groupedByOcc {
-            guard !eventIDs.isEmpty else { continue }
-            let chosen: String
-            if let pref = preferredEventIDByOccurrence[occID], eventIDs.contains(pref) {
-                chosen = pref
+        var canonicalByOcc: [UUID: ManagedGoogleEventSummary] = [:]
+        var canonicalIDByOcc: [UUID: String] = [:]
+        for (occID, summaries) in groupedByOcc {
+            guard !summaries.isEmpty else { continue }
+            let chosen: ManagedGoogleEventSummary
+            if let pref = preferredEventIDByOccurrence[occID],
+               let matching = summaries.first(where: { $0.eventID == pref }) {
+                chosen = matching
             } else {
-                chosen = eventIDs[0]
+                chosen = summaries[0]
             }
-            canonical[occID] = chosen
-            for id in eventIDs where id != chosen {
-                toDelete.append(id)
+            canonicalByOcc[occID] = chosen
+            canonicalIDByOcc[occID] = chosen.eventID
+            for item in summaries where item.eventID != chosen.eventID {
+                toDelete.append(item.eventID)
             }
         }
 
-        return (canonical, toDelete)
+        return (canonicalByOcc, canonicalIDByOcc, toDelete)
     }
 
     nonisolated static func redirectScheme(for clientID: String) -> String {
@@ -1390,7 +1652,11 @@ final class GoogleCalendarService {
     }
 
     nonisolated static func extractCozyManagedEvents(fromItems items: [GoogleEventDTO]) -> [(eventID: String, occurrenceID: UUID?)] {
-        var managed: [(eventID: String, occurrenceID: UUID?)] = []
+        extractCozyManagedEventSummaries(fromItems: items).map { ($0.eventID, $0.occurrenceID) }
+    }
+
+    nonisolated static func extractCozyManagedEventSummaries(fromItems items: [GoogleEventDTO]) -> [ManagedGoogleEventSummary] {
+        var managed: [ManagedGoogleEventSummary] = []
         for event in items {
             if event.status?.lowercased() == "cancelled" {
                 continue
@@ -1415,7 +1681,14 @@ final class GoogleCalendarService {
 
             let occUUID = priv?["cozyTaskOccurrenceId"].flatMap { UUID(uuidString: $0) }
                 ?? CalendarFreeTimeService.extractCozyOccurrenceID(fromURL: nil, notes: event.description)
-            managed.append((eventID: eventID, occurrenceID: occUUID))
+            managed.append(
+                ManagedGoogleEventSummary(
+                    eventID: eventID,
+                    occurrenceID: occUUID,
+                    start: event.start,
+                    end: event.end
+                )
+            )
         }
         return managed
     }

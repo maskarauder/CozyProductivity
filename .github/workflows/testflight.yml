@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   deploy-testflight:
-    name: Archive, Sign IPA & Upload to TestFlight
+    name: Archive, Cloud-Sign IPA & Upload to TestFlight (Option A)
     runs-on: macos-15
     timeout-minutes: 45
 
@@ -47,16 +47,13 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Validate Secrets & Resolve Build Configuration
+      - name: Validate Option A Secrets & Resolve Version Configuration
         id: config
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
-          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
-          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
-          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
           CONFIGURED_BUNDLE_ID: ${{ vars.APP_BUNDLE_ID || secrets.APP_BUNDLE_ID }}
           INPUT_MARKETING_VERSION: ${{ inputs.marketing_version }}
           INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
@@ -78,52 +75,47 @@ jobs:
             RUN_TESTS="false"
           fi
 
-          if [[ -n "${BUILD_PROVISION_PROFILE_BASE64}" ]]; then
-            SIGNING_MODE="manual"
-          else
-            SIGNING_MODE="automatic"
-          fi
-
+          # Option A: Cloud-Managed Automatic Signing via App Store Connect API Key
+          # Requires only the 4 team-wide Apple secrets (no .p12 or .mobileprovision files needed).
           MISSING=()
           [[ -z "${APPLE_TEAM_ID}" ]] && MISSING+=("APPLE_TEAM_ID")
-
-          if [[ "${SIGNING_MODE}" == "manual" ]]; then
-            [[ -z "${BUILD_CERTIFICATE_BASE64}" ]] && MISSING+=("BUILD_CERTIFICATE_BASE64")
-            [[ -z "${P12_PASSWORD}" ]] && MISSING+=("P12_PASSWORD")
-            if [[ "${UPLOAD_TO_TESTFLIGHT}" == "true" ]]; then
-              [[ -z "${ASC_KEY_ID}" ]] && MISSING+=("ASC_KEY_ID")
-              [[ -z "${ASC_ISSUER_ID}" ]] && MISSING+=("ASC_ISSUER_ID")
-              [[ -z "${ASC_PRIVATE_KEY}" ]] && MISSING+=("ASC_PRIVATE_KEY")
-            fi
-          else
-            [[ -z "${ASC_KEY_ID}" ]] && MISSING+=("ASC_KEY_ID")
-            [[ -z "${ASC_ISSUER_ID}" ]] && MISSING+=("ASC_ISSUER_ID")
-            [[ -z "${ASC_PRIVATE_KEY}" ]] && MISSING+=("ASC_PRIVATE_KEY")
-            if [[ -n "${BUILD_CERTIFICATE_BASE64}" && -z "${P12_PASSWORD}" ]]; then
-              MISSING+=("P12_PASSWORD (required when BUILD_CERTIFICATE_BASE64 is set)")
-            fi
-          fi
+          [[ -z "${ASC_KEY_ID}" ]] && MISSING+=("ASC_KEY_ID")
+          [[ -z "${ASC_ISSUER_ID}" ]] && MISSING+=("ASC_ISSUER_ID")
+          [[ -z "${ASC_PRIVATE_KEY}" ]] && MISSING+=("ASC_PRIVATE_KEY")
 
           if (( ${#MISSING[@]} > 0 )); then
             {
-              echo "### Missing Required GitHub Actions Secrets"
+              echo "### Missing Required GitHub Actions Secrets (Option A — Cloud-Managed Signing)"
               echo ""
               echo "Add the following repository secrets under **Settings → Secrets and variables → Actions**:"
               echo ""
               for item in "${MISSING[@]}"; do
                 echo "- \`${item}\`"
               done
+              echo ""
+              echo "> Your App Store Connect API Key must have **Admin** or **App Manager** access so Xcode Cloud-Managed Signing can create/fetch the Apple Distribution certificate and App Store provisioning profile automatically."
             } >> "$GITHUB_STEP_SUMMARY"
-            printf '::error::Missing required GitHub Actions secrets: %s\n' "${MISSING[*]}"
+            printf '::error::Missing required GitHub Actions secrets for Option A Cloud-Managed Signing: %s\n' "${MISSING[*]}"
             exit 1
           fi
 
           BUNDLE_ID="${CONFIGURED_BUNDLE_ID:-com.cozyproductivity.app}"
 
+          # Resolve & normalize CFBundleShortVersionString (Apple requires 1-3 period-separated integers)
+          RAW_VERSION_SOURCE=""
           if [[ -n "${INPUT_MARKETING_VERSION}" ]]; then
-            MARKETING_VERSION="${INPUT_MARKETING_VERSION#v}"
-          elif [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == v* ]]; then
-            MARKETING_VERSION="${REF_NAME#v}"
+            RAW_VERSION_SOURCE="${INPUT_MARKETING_VERSION}"
+            MARKETING_VERSION="${INPUT_MARKETING_VERSION#[vV]}"
+          elif [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" =~ ^[vV] ]]; then
+            RAW_VERSION_SOURCE="${REF_NAME}"
+            RAW_WITHOUT_V="${REF_NAME#[vV]}"
+            MARKETING_VERSION="${RAW_WITHOUT_V}"
+            # Strip SemVer build metadata (+...) and prerelease suffix (-beta.1, -rc.2, etc.) from git tags
+            MARKETING_VERSION="${MARKETING_VERSION%%+*}"
+            MARKETING_VERSION="${MARKETING_VERSION%%-*}"
+            if [[ "${RAW_WITHOUT_V}" != "${MARKETING_VERSION}" ]]; then
+              echo "Normalized prerelease git tag '${REF_NAME}' -> MARKETING_VERSION='${MARKETING_VERSION}'"
+            fi
           else
             MARKETING_VERSION="1.0"
           fi
@@ -134,18 +126,42 @@ jobs:
             BUILD_NUMBER="${RUN_NUMBER}"
           fi
 
+          APPLE_VERSION_REGEX='^[0-9]+(\.[0-9]+){0,2}$'
+          if [[ ! "${MARKETING_VERSION}" =~ ${APPLE_VERSION_REGEX} ]]; then
+            {
+              echo "### Invalid Marketing Version (\`CFBundleShortVersionString\`)"
+              echo ""
+              echo "- **Input / Tag**: \`${RAW_VERSION_SOURCE:-${MARKETING_VERSION}}\`"
+              echo "- **Resolved Value**: \`${MARKETING_VERSION}\`"
+              echo "- **Required Format**: 1 to 3 period-separated non-negative integers (e.g. \`1.0\`, \`1.2.0\`, or tag \`v1.2.0-beta.1\`)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            printf '::error::Invalid MARKETING_VERSION "%s" (from "%s"). Apple requires 1-3 period-separated integers (e.g. 1.0 or 1.2.0).\n' \
+              "${MARKETING_VERSION}" "${RAW_VERSION_SOURCE:-${MARKETING_VERSION}}"
+            exit 1
+          fi
+
+          if [[ ! "${BUILD_NUMBER}" =~ ${APPLE_VERSION_REGEX} ]]; then
+            {
+              echo "### Invalid Build Number (\`CFBundleVersion\`)"
+              echo ""
+              echo "- **Resolved Value**: \`${BUILD_NUMBER}\`"
+              echo "- **Required Format**: 1 to 3 period-separated non-negative integers (e.g. \`42\` or \`1.0.42\`)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            printf '::error::Invalid BUILD_NUMBER "%s". Apple requires 1-3 period-separated integers.\n' "${BUILD_NUMBER}"
+            exit 1
+          fi
+
           echo "bundle_id=${BUNDLE_ID}" >> "$GITHUB_OUTPUT"
           echo "marketing_version=${MARKETING_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build_number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "signing_mode=${SIGNING_MODE}" >> "$GITHUB_OUTPUT"
           echo "run_tests=${RUN_TESTS}" >> "$GITHUB_OUTPUT"
           echo "upload_to_testflight=${UPLOAD_TO_TESTFLIGHT}" >> "$GITHUB_OUTPUT"
 
-          echo "Resolved configuration:"
+          echo "Resolved Option A configuration:"
           echo "  Bundle ID:            ${BUNDLE_ID}"
           echo "  Marketing Version:    ${MARKETING_VERSION}"
           echo "  Build Number:         ${BUILD_NUMBER}"
-          echo "  Signing Mode:         ${SIGNING_MODE}"
+          echo "  Signing Mode:         automatic (Cloud-Managed via App Store Connect API Key)"
           echo "  Run Unit Tests:       ${RUN_TESTS}"
           echo "  Upload to TestFlight: ${UPLOAD_TO_TESTFLIGHT}"
 
@@ -178,163 +194,95 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             COMPILER_INDEX_STORE_ENABLE=NO
 
-      - name: Install App Store Connect API Key, Certificate & Provisioning Profile
+      - name: Install App Store Connect API Key (.p8)
         id: signing
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
-          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
-          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
-          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
         run: |
           set -euo pipefail
 
-          # 1. Install App Store Connect .p8 API key (accepts raw PEM or base64-encoded content)
-          if [[ -n "${ASC_KEY_ID}" && -n "${ASC_PRIVATE_KEY}" ]]; then
-            ASC_KEYS_DIR="$HOME/.appstoreconnect/private_keys"
-            mkdir -p "$ASC_KEYS_DIR"
-            chmod 700 "$ASC_KEYS_DIR"
-            ASC_KEY_PATH="${ASC_KEYS_DIR}/AuthKey_${ASC_KEY_ID}.p8"
+          ASC_KEYS_DIR="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$ASC_KEYS_DIR"
+          chmod 700 "$ASC_KEYS_DIR"
+          ASC_KEY_PATH="${ASC_KEYS_DIR}/AuthKey_${ASC_KEY_ID}.p8"
 
-            ASC_KEY_PATH="$ASC_KEY_PATH" python3 - <<'PY'
-          import base64, os, pathlib
+          ASC_KEY_PATH="$ASC_KEY_PATH" python3 - <<'PY'
+          import base64, os, pathlib, sys
 
           raw = os.environ["ASC_PRIVATE_KEY"].strip()
           out_path = pathlib.Path(os.environ["ASC_KEY_PATH"])
           if "BEGIN PRIVATE KEY" in raw:
-              content = raw + "\n"
+              content = raw
           else:
-              cleaned = "".join(raw.split())
-              content = base64.b64decode(cleaned).decode("utf-8")
-              if not content.endswith("\n"):
-                  content += "\n"
+              try:
+                  cleaned = "".join(raw.split())
+                  content = base64.b64decode(cleaned).decode("utf-8")
+              except Exception as exc:
+                  print(f"::error::ASC_PRIVATE_KEY is neither a PEM private key nor valid base64-encoded PEM: {exc}", file=sys.stderr)
+                  sys.exit(1)
+
+          if "BEGIN PRIVATE KEY" not in content or "END PRIVATE KEY" not in content:
+              print("::error::Decoded ASC_PRIVATE_KEY does not contain a valid PKCS#8 PEM block ('BEGIN PRIVATE KEY').", file=sys.stderr)
+              sys.exit(1)
+
+          if not content.endswith("\n"):
+              content += "\n"
+
           out_path.write_text(content, encoding="utf-8")
           out_path.chmod(0o600)
           PY
 
-            echo "asc_key_path=${ASC_KEY_PATH}" >> "$GITHUB_OUTPUT"
-            echo "Installed App Store Connect API key at ${ASC_KEY_PATH}"
-          fi
+          echo "asc_key_path=${ASC_KEY_PATH}" >> "$GITHUB_OUTPUT"
+          echo "Installed App Store Connect API key at ${ASC_KEY_PATH}"
 
-          # 2. Import Apple Distribution .p12 certificate into an isolated temporary keychain (when provided)
-          if [[ -n "${BUILD_CERTIFICATE_BASE64}" ]]; then
-            KEYCHAIN_PATH="${RUNNER_TEMP}/cozy-signing.keychain-db"
-            KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
-            CERT_PATH="${RUNNER_TEMP}/distribution.p12"
-
-            printf '%s' "${BUILD_CERTIFICATE_BASE64}" | tr -d '[:space:]' | base64 --decode -o "${CERT_PATH}"
-
-            security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-            security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
-            security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-
-            security import "${CERT_PATH}" \
-              -P "${P12_PASSWORD}" \
-              -A \
-              -t cert \
-              -f pkcs12 \
-              -k "${KEYCHAIN_PATH}"
-
-            security set-key-partition-list \
-              -S apple-tool:,apple:,codesign: \
-              -s \
-              -k "${KEYCHAIN_PASSWORD}" \
-              "${KEYCHAIN_PATH}"
-
-            EXISTING_KEYCHAINS=()
-            while IFS= read -r line; do
-              cleaned=$(echo "$line" | xargs | tr -d '"')
-              [[ -n "$cleaned" ]] && EXISTING_KEYCHAINS+=("$cleaned")
-            done < <(security list-keychains -d user)
-
-            security list-keychain -d user -s "${KEYCHAIN_PATH}" "${EXISTING_KEYCHAINS[@]}"
-            echo "keychain_path=${KEYCHAIN_PATH}" >> "$GITHUB_OUTPUT"
-            echo "Imported signing identities:"
-            security find-identity -v -p codesigning "${KEYCHAIN_PATH}"
-          fi
-
-          # 3. Install manual App Store provisioning profile (when provided)
-          if [[ -n "${BUILD_PROVISION_PROFILE_BASE64}" ]]; then
-            PROFILES_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
-            mkdir -p "${PROFILES_DIR}"
-            TEMP_PROFILE="${RUNNER_TEMP}/build.mobileprovision"
-            DECODED_PLIST="${RUNNER_TEMP}/profile.plist"
-
-            printf '%s' "${BUILD_PROVISION_PROFILE_BASE64}" | tr -d '[:space:]' | base64 --decode -o "${TEMP_PROFILE}"
-            security cms -D -i "${TEMP_PROFILE}" > "${DECODED_PLIST}"
-
-            PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "${DECODED_PLIST}")
-            PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "${DECODED_PLIST}")
-            DEST_PROFILE="${PROFILES_DIR}/${PROFILE_UUID}.mobileprovision"
-            cp "${TEMP_PROFILE}" "${DEST_PROFILE}"
-
-            echo "profile_uuid=${PROFILE_UUID}" >> "$GITHUB_OUTPUT"
-            echo "profile_name=${PROFILE_NAME}" >> "$GITHUB_OUTPUT"
-            echo "profile_path=${DEST_PROFILE}" >> "$GITHUB_OUTPUT"
-            echo "Installed provisioning profile '${PROFILE_NAME}' (${PROFILE_UUID})"
-          fi
-
-      - name: Archive Release Build
+      - name: Archive Release Build (Cloud-Managed Automatic Signing)
         id: archive
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           BUNDLE_ID: ${{ steps.config.outputs.bundle_id }}
           MARKETING_VERSION: ${{ steps.config.outputs.marketing_version }}
           BUILD_NUMBER: ${{ steps.config.outputs.build_number }}
-          SIGNING_MODE: ${{ steps.config.outputs.signing_mode }}
-          PROFILE_UUID: ${{ steps.signing.outputs.profile_uuid }}
         run: |
           set -euo pipefail
           ARCHIVE_PATH="${RUNNER_TEMP}/CozyProductivity.xcarchive"
 
-          if [[ "${SIGNING_MODE}" == "manual" ]]; then
-            xcodebuild clean archive \
-              -project CozyProductivity.xcodeproj \
-              -scheme CozyProductivity \
-              -configuration Release \
-              -destination "generic/platform=iOS" \
-              -archivePath "${ARCHIVE_PATH}" \
-              DEVELOPMENT_TEAM="${APPLE_TEAM_ID}" \
-              PRODUCT_BUNDLE_IDENTIFIER="${BUNDLE_ID}" \
-              MARKETING_VERSION="${MARKETING_VERSION}" \
-              CURRENT_PROJECT_VERSION="${BUILD_NUMBER}" \
-              CODE_SIGN_STYLE=Manual \
-              CODE_SIGN_IDENTITY="Apple Distribution" \
-              PROVISIONING_PROFILE_SPECIFIER="${PROFILE_UUID}" \
-              COMPILER_INDEX_STORE_ENABLE=NO
-          else
-            # Archive without requiring a local Apple Development certificate; distribution signing
-            # (Cloud-managed or imported Apple Distribution cert) runs during -exportArchive.
-            xcodebuild clean archive \
-              -project CozyProductivity.xcodeproj \
-              -scheme CozyProductivity \
-              -configuration Release \
-              -destination "generic/platform=iOS" \
-              -archivePath "${ARCHIVE_PATH}" \
-              DEVELOPMENT_TEAM="${APPLE_TEAM_ID}" \
-              PRODUCT_BUNDLE_IDENTIFIER="${BUNDLE_ID}" \
-              MARKETING_VERSION="${MARKETING_VERSION}" \
-              CURRENT_PROJECT_VERSION="${BUILD_NUMBER}" \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGNING_ALLOWED=NO \
-              COMPILER_INDEX_STORE_ENABLE=NO
+          # Compile & archive without requiring a local Apple Development certificate on the ephemeral runner;
+          # Cloud-Managed Apple Distribution signing & App Store profile provisioning execute during -exportArchive.
+          xcodebuild clean archive \
+            -project CozyProductivity.xcodeproj \
+            -scheme CozyProductivity \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "${ARCHIVE_PATH}" \
+            DEVELOPMENT_TEAM="${APPLE_TEAM_ID}" \
+            PRODUCT_BUNDLE_IDENTIFIER="${BUNDLE_ID}" \
+            MARKETING_VERSION="${MARKETING_VERSION}" \
+            CURRENT_PROJECT_VERSION="${BUILD_NUMBER}" \
+            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO
 
-            /usr/libexec/PlistBuddy -c "Set :ApplicationProperties:Team ${APPLE_TEAM_ID}" "${ARCHIVE_PATH}/Info.plist" 2>/dev/null \
-              || /usr/libexec/PlistBuddy -c "Add :ApplicationProperties:Team string ${APPLE_TEAM_ID}" "${ARCHIVE_PATH}/Info.plist"
+          # Record Team ID in the xcarchive ApplicationProperties so xcodebuild -exportArchive resolves automatic cloud signing
+          /usr/libexec/PlistBuddy -c "Set :ApplicationProperties:Team ${APPLE_TEAM_ID}" "${ARCHIVE_PATH}/Info.plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :ApplicationProperties:Team string ${APPLE_TEAM_ID}" "${ARCHIVE_PATH}/Info.plist"
+
+          RECORDED_TEAM=$(/usr/libexec/PlistBuddy -c "Print :ApplicationProperties:Team" "${ARCHIVE_PATH}/Info.plist")
+          if [[ "${RECORDED_TEAM}" != "${APPLE_TEAM_ID}" ]]; then
+            echo "::error::Failed to stamp Team ID into xcarchive Info.plist"
+            exit 1
           fi
 
           echo "archive_path=${ARCHIVE_PATH}" >> "$GITHUB_OUTPUT"
 
-      - name: Export Signed IPA
+      - name: Export Cloud-Signed IPA via App Store Connect API Key
         id: export
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_PATH: ${{ steps.signing.outputs.asc_key_path }}
-          BUNDLE_ID: ${{ steps.config.outputs.bundle_id }}
-          SIGNING_MODE: ${{ steps.config.outputs.signing_mode }}
-          PROFILE_UUID: ${{ steps.signing.outputs.profile_uuid }}
           ARCHIVE_PATH: ${{ steps.archive.outputs.archive_path }}
         run: |
           set -euo pipefail
@@ -345,47 +293,38 @@ jobs:
           EXPORT_OPTIONS_PLIST="${EXPORT_OPTIONS_PLIST}" python3 - <<'PY'
           import os, plistlib
 
-          signing_mode = os.environ["SIGNING_MODE"]
-          team_id = os.environ["APPLE_TEAM_ID"]
-          bundle_id = os.environ["BUNDLE_ID"]
-          profile_uuid = os.environ.get("PROFILE_UUID", "")
-
           payload = {
               "method": "app-store-connect",
               "destination": "export",
-              "teamID": team_id,
-              "signingStyle": signing_mode,
+              "teamID": os.environ["APPLE_TEAM_ID"],
+              "signingStyle": "automatic",
               "uploadSymbols": True,
               "manageAppVersionAndBuildNumber": False,
           }
-          if signing_mode == "manual":
-              payload["signingCertificate"] = "Apple Distribution"
-              payload["provisioningProfiles"] = {bundle_id: profile_uuid}
 
           with open(os.environ["EXPORT_OPTIONS_PLIST"], "wb") as fh:
               plistlib.dump(payload, fh)
           PY
 
-          if [[ "${SIGNING_MODE}" == "manual" ]]; then
-            xcodebuild -exportArchive \
-              -archivePath "${ARCHIVE_PATH}" \
-              -exportOptionsPlist "${EXPORT_OPTIONS_PLIST}" \
-              -exportPath "${EXPORT_PATH}"
-          else
-            xcodebuild -exportArchive \
-              -archivePath "${ARCHIVE_PATH}" \
-              -exportOptionsPlist "${EXPORT_OPTIONS_PLIST}" \
-              -exportPath "${EXPORT_PATH}" \
-              -allowProvisioningUpdates \
-              -authenticationKeyPath "${ASC_KEY_PATH}" \
-              -authenticationKeyID "${ASC_KEY_ID}" \
-              -authenticationKeyIssuerID "${ASC_ISSUER_ID}"
-          fi
+          xcodebuild -exportArchive \
+            -archivePath "${ARCHIVE_PATH}" \
+            -exportOptionsPlist "${EXPORT_OPTIONS_PLIST}" \
+            -exportPath "${EXPORT_PATH}" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "${ASC_KEY_PATH}" \
+            -authenticationKeyID "${ASC_KEY_ID}" \
+            -authenticationKeyIssuerID "${ASC_ISSUER_ID}"
 
           IPA_PATH=$(find "${EXPORT_PATH}" -maxdepth 1 -name "*.ipa" | head -n 1)
           if [[ -z "${IPA_PATH}" || ! -f "${IPA_PATH}" ]]; then
             echo "::error::xcodebuild -exportArchive finished without producing an .ipa file in ${EXPORT_PATH}"
             ls -la "${EXPORT_PATH}"
+            exit 1
+          fi
+
+          # Verify the exported IPA embeds an App Store provisioning profile
+          if ! unzip -l "${IPA_PATH}" | grep -q "embedded.mobileprovision"; then
+            echo "::error::Exported IPA at ${IPA_PATH} is missing embedded.mobileprovision"
             exit 1
           fi
 
@@ -399,7 +338,7 @@ jobs:
           echo "ipa_path=${IPA_PATH}" >> "$GITHUB_OUTPUT"
           echo "export_path=${EXPORT_PATH}" >> "$GITHUB_OUTPUT"
           echo "ipa_size=${IPA_SIZE}" >> "$GITHUB_OUTPUT"
-          echo "Exported signed IPA: ${IPA_PATH} (${IPA_SIZE})"
+          echo "Exported cloud-signed IPA: ${IPA_PATH} (${IPA_SIZE})"
 
       - name: Upload Signed IPA & dSYMs as Workflow Artifact
         uses: actions/upload-artifact@v7
@@ -442,12 +381,11 @@ jobs:
           BUNDLE_ID: ${{ steps.config.outputs.bundle_id }}
           MARKETING_VERSION: ${{ steps.config.outputs.marketing_version }}
           BUILD_NUMBER: ${{ steps.config.outputs.build_number }}
-          SIGNING_MODE: ${{ steps.config.outputs.signing_mode }}
           UPLOADED: ${{ steps.config.outputs.upload_to_testflight }}
           IPA_SIZE: ${{ steps.export.outputs.ipa_size }}
         run: |
           {
-            echo "### Cozy TestFlight Build Summary"
+            echo "### Cozy TestFlight Build Summary (Option A — Cloud-Managed Signing)"
             echo ""
             echo "| Field | Value |"
             echo "| --- | --- |"
@@ -455,25 +393,17 @@ jobs:
             echo "| **Bundle Identifier** | \`${BUNDLE_ID}\` |"
             echo "| **Marketing Version** | \`${MARKETING_VERSION}\` |"
             echo "| **Build Number** | \`${BUILD_NUMBER}\` |"
-            echo "| **Signing Mode** | \`${SIGNING_MODE}\` |"
+            echo "| **Signing Mode** | \`automatic (Cloud-Managed via ASC API Key)\` |"
             echo "| **Signed IPA Size** | \`${IPA_SIZE}\` |"
             echo "| **Uploaded to TestFlight** | \`${UPLOADED}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Clean Up Temporary Keychain, Certificates & API Keys
+      - name: Clean Up Temporary App Store Connect API Key
         if: always()
         env:
-          KEYCHAIN_PATH: ${{ steps.signing.outputs.keychain_path }}
-          PROFILE_PATH: ${{ steps.signing.outputs.profile_path }}
           ASC_KEY_PATH: ${{ steps.signing.outputs.asc_key_path }}
         run: |
-          if [[ -n "${KEYCHAIN_PATH}" ]]; then
-            security delete-keychain "${KEYCHAIN_PATH}" 2>/dev/null || true
-          fi
-          if [[ -n "${PROFILE_PATH}" ]]; then
-            rm -f "${PROFILE_PATH}"
-          fi
           if [[ -n "${ASC_KEY_PATH}" ]]; then
             rm -f "${ASC_KEY_PATH}"
           fi
-          rm -f "${RUNNER_TEMP}/distribution.p12" "${RUNNER_TEMP}/build.mobileprovision" "${RUNNER_TEMP}/profile.plist"
+          rm -f "${RUNNER_TEMP}/ExportOptions.plist"

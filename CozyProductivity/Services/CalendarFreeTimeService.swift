@@ -12,8 +12,208 @@ struct EKSyncOutcome {
     let upserted: Int
     let removed: Int
     let failed: Int
+    let deferred: Int
     let calendarTitle: String?
     let errorMessage: String?
+
+    init(
+        upserted: Int,
+        removed: Int,
+        failed: Int,
+        deferred: Int = 0,
+        calendarTitle: String?,
+        errorMessage: String?
+    ) {
+        self.upserted = upserted
+        self.removed = removed
+        self.failed = failed
+        self.deferred = deferred
+        self.calendarTitle = calendarTitle
+        self.errorMessage = errorMessage
+    }
+}
+
+struct BackingCalendarInfo: Equatable {
+    let calendarIdentifier: String
+    let title: String
+    let sourceTitle: String
+    let allowsContentModifications: Bool
+    let isDefaultForNewEvents: Bool
+}
+
+final class BackingEventRecord {
+    var eventIdentifier: String?
+    var calendarIdentifier: String
+    var title: String
+    var startDate: Date
+    var endDate: Date
+    var isAllDay: Bool
+    var isFreeAvailability: Bool
+    var url: URL?
+    var notes: String?
+    fileprivate var underlyingEKEvent: EKEvent?
+
+    init(
+        eventIdentifier: String? = nil,
+        calendarIdentifier: String,
+        title: String = "",
+        startDate: Date = Date(),
+        endDate: Date = Date(),
+        isAllDay: Bool = false,
+        isFreeAvailability: Bool = false,
+        url: URL? = nil,
+        notes: String? = nil,
+        underlyingEKEvent: EKEvent? = nil
+    ) {
+        self.eventIdentifier = eventIdentifier
+        self.calendarIdentifier = calendarIdentifier
+        self.title = title
+        self.startDate = startDate
+        self.endDate = endDate
+        self.isAllDay = isAllDay
+        self.isFreeAvailability = isFreeAvailability
+        self.url = url
+        self.notes = notes
+        self.underlyingEKEvent = underlyingEKEvent
+    }
+
+    var resolvedEventIdentifier: String? {
+        if let liveID = underlyingEKEvent?.eventIdentifier, !liveID.isEmpty {
+            return liveID
+        }
+        return eventIdentifier
+    }
+}
+
+@MainActor
+protocol EventStoreBacking: AnyObject {
+    func authorizationStatus() -> EKAuthorizationStatus
+    func requestFullAccess() async throws -> Bool
+    func calendars() -> [BackingCalendarInfo]
+    func events(from startDate: Date, to endDate: Date, calendarIdentifiers: [String]?) -> [BackingEventRecord]
+    func event(withIdentifier identifier: String) -> BackingEventRecord?
+    func makeNewEvent(in calendarIdentifier: String) -> BackingEventRecord
+    func save(_ event: BackingEventRecord) throws
+    func remove(_ event: BackingEventRecord) throws
+    func commit() throws
+    func reset()
+}
+
+@MainActor
+final class LiveEventStoreBacking: EventStoreBacking {
+    private let eventStore = EKEventStore()
+
+    func authorizationStatus() -> EKAuthorizationStatus {
+        EKEventStore.authorizationStatus(for: .event)
+    }
+
+    func requestFullAccess() async throws -> Bool {
+        try await eventStore.requestFullAccessToEvents()
+    }
+
+    func calendars() -> [BackingCalendarInfo] {
+        let defaultID = eventStore.defaultCalendarForNewEvents?.calendarIdentifier
+        return eventStore.calendars(for: .event).map { cal in
+            BackingCalendarInfo(
+                calendarIdentifier: cal.calendarIdentifier,
+                title: cal.title,
+                sourceTitle: cal.source.title,
+                allowsContentModifications: cal.allowsContentModifications,
+                isDefaultForNewEvents: cal.calendarIdentifier == defaultID
+            )
+        }
+    }
+
+    func events(from startDate: Date, to endDate: Date, calendarIdentifiers: [String]?) -> [BackingEventRecord] {
+        let ekCalendars: [EKCalendar]?
+        if let calendarIdentifiers {
+            let idSet = Set(calendarIdentifiers)
+            let matched = eventStore.calendars(for: .event).filter { idSet.contains($0.calendarIdentifier) }
+            if matched.isEmpty {
+                return []
+            }
+            ekCalendars = matched
+        } else {
+            ekCalendars = nil
+        }
+
+        let predicate = eventStore.predicateForEvents(withStart: startDate, end: endDate, calendars: ekCalendars)
+        return eventStore.events(matching: predicate).compactMap { Self.wrap($0) }
+    }
+
+    func event(withIdentifier identifier: String) -> BackingEventRecord? {
+        guard !identifier.isEmpty, let ekEvent = eventStore.event(withIdentifier: identifier) else {
+            return nil
+        }
+        return Self.wrap(ekEvent)
+    }
+
+    func makeNewEvent(in calendarIdentifier: String) -> BackingEventRecord {
+        let ekEvent = EKEvent(eventStore: eventStore)
+        if let cal = eventStore.calendars(for: .event).first(where: { $0.calendarIdentifier == calendarIdentifier }) {
+            ekEvent.calendar = cal
+        }
+        return BackingEventRecord(
+            eventIdentifier: ekEvent.eventIdentifier,
+            calendarIdentifier: calendarIdentifier,
+            underlyingEKEvent: ekEvent
+        )
+    }
+
+    func save(_ event: BackingEventRecord) throws {
+        let ekEvent = event.underlyingEKEvent ?? EKEvent(eventStore: eventStore)
+        if let targetCal = eventStore.calendars(for: .event).first(where: { $0.calendarIdentifier == event.calendarIdentifier }) {
+            ekEvent.calendar = targetCal
+        }
+        ekEvent.title = event.title
+        ekEvent.startDate = event.startDate
+        ekEvent.endDate = event.endDate
+        ekEvent.url = event.url
+        ekEvent.notes = event.notes
+        event.underlyingEKEvent = ekEvent
+        try eventStore.save(ekEvent, span: .thisEvent, commit: false)
+        if let assignedID = ekEvent.eventIdentifier, !assignedID.isEmpty {
+            event.eventIdentifier = assignedID
+        }
+    }
+
+    func remove(_ event: BackingEventRecord) throws {
+        let ekEvent: EKEvent? = {
+            if let direct = event.underlyingEKEvent {
+                return direct
+            }
+            if let eid = event.eventIdentifier, !eid.isEmpty {
+                return eventStore.event(withIdentifier: eid)
+            }
+            return nil
+        }()
+        guard let ekEvent else { return }
+        try eventStore.remove(ekEvent, span: .thisEvent, commit: false)
+    }
+
+    func commit() throws {
+        try eventStore.commit()
+    }
+
+    func reset() {
+        eventStore.reset()
+    }
+
+    private static func wrap(_ ekEvent: EKEvent) -> BackingEventRecord? {
+        guard let s = ekEvent.startDate, let e = ekEvent.endDate else { return nil }
+        return BackingEventRecord(
+            eventIdentifier: ekEvent.eventIdentifier,
+            calendarIdentifier: ekEvent.calendar?.calendarIdentifier ?? "",
+            title: ekEvent.title ?? "",
+            startDate: s,
+            endDate: e,
+            isAllDay: ekEvent.isAllDay,
+            isFreeAvailability: ekEvent.availability == .free,
+            url: ekEvent.url,
+            notes: ekEvent.notes,
+            underlyingEKEvent: ekEvent
+        )
+    }
 }
 
 @MainActor
@@ -23,22 +223,26 @@ final class CalendarFreeTimeService {
     nonisolated static let cozyEventMarker = "[CozyProductivity]"
     nonisolated static let cozyURLScheme = "cozyproductivity"
 
-    private let eventStore = EKEventStore()
-    private(set) var authorizationStatus: EKAuthorizationStatus = EKEventStore.authorizationStatus(for: .event)
+    private let backing: EventStoreBacking
+    private(set) var authorizationStatus: EKAuthorizationStatus
 
-    init() {}
+    init(backing: EventStoreBacking? = nil) {
+        let resolvedBacking = backing ?? LiveEventStoreBacking()
+        self.backing = resolvedBacking
+        self.authorizationStatus = resolvedBacking.authorizationStatus()
+    }
 
     var hasReadAccess: Bool {
         authorizationStatus == .fullAccess
     }
 
     func refreshAuthorizationStatus() {
-        authorizationStatus = EKEventStore.authorizationStatus(for: .event)
+        authorizationStatus = backing.authorizationStatus()
     }
 
     func requestAccess() async -> Bool {
         do {
-            let granted = try await eventStore.requestFullAccessToEvents()
+            let granted = try await backing.requestFullAccess()
             refreshAuthorizationStatus()
             return granted
         } catch {
@@ -54,7 +258,7 @@ final class CalendarFreeTimeService {
         to endDate: Date,
         wakingStartHour: Int,
         wakingEndHour: Int,
-        calendars: [EKCalendar]? = nil,
+        calendarIdentifiers: [String]? = nil,
         calendar: Calendar = DateHelpers.calendar
     ) -> [Date: [(Date, Date)]] {
         refreshAuthorizationStatus()
@@ -66,24 +270,23 @@ final class CalendarFreeTimeService {
             return [:]
         }
 
-        if let calendars, calendars.isEmpty {
+        if let calendarIdentifiers, calendarIdentifiers.isEmpty {
             return [:]
         }
 
-        let predicate = eventStore.predicateForEvents(withStart: firstDay, end: queryEnd, calendars: calendars)
-        let events = eventStore.events(matching: predicate)
+        let events = backing.events(from: firstDay, to: queryEnd, calendarIdentifiers: calendarIdentifiers)
 
         var rawIntervals: [(Date, Date)] = []
         for event in events {
-            if event.isAllDay || event.availability == .free {
+            if event.isAllDay || event.isFreeAvailability {
                 continue
             }
             // Exclude CozyProductivity's own pushed task blocks (across all channels, including OAuth-created Google events)
-            if Self.isCozyManagedEvent(event) {
+            if Self.isCozyManagedRecord(event) {
                 continue
             }
-            if let s = event.startDate, let e = event.endDate, e > s {
-                rawIntervals.append((s, e))
+            if event.endDate > event.startDate {
+                rawIntervals.append((event.startDate, event.endDate))
             }
         }
 
@@ -111,7 +314,7 @@ final class CalendarFreeTimeService {
             to: endDate,
             wakingStartHour: wakingStartHour,
             wakingEndHour: wakingEndHour,
-            calendars: nil,
+            calendarIdentifiers: nil,
             calendar: calendar
         )
         return Self.mergeBusyIntervalsByDay([intervalsByDay])
@@ -121,11 +324,11 @@ final class CalendarFreeTimeService {
 
     /// Returns writable non-Google Apple / iCloud / local calendars on the iPhone.
     /// When `excludeGoogleCalendars` is true, Google-backed calendars are strictly excluded to prevent cross-channel interference.
-    func writableAppleCalendars(excludeGoogleCalendars: Bool = true) -> [EKCalendar] {
+    func writableAppleCalendars(excludeGoogleCalendars: Bool = true) -> [BackingCalendarInfo] {
         refreshAuthorizationStatus()
         guard hasReadAccess else { return [] }
         let googleIDs = Set(googleAccountCalendars().map(\.calendarIdentifier))
-        let allWritable = eventStore.calendars(for: .event).filter { $0.allowsContentModifications }
+        let allWritable = backing.calendars().filter { $0.allowsContentModifications }
         let nonGoogleWritable = allWritable.filter { !googleIDs.contains($0.calendarIdentifier) }
         if excludeGoogleCalendars {
             return nonGoogleWritable
@@ -137,12 +340,12 @@ final class CalendarFreeTimeService {
         preferredIdentifier: String,
         avoidCalendarIdentifier: String? = nil,
         excludeGoogleCalendars: Bool = false
-    ) -> EKCalendar? {
+    ) -> BackingCalendarInfo? {
         refreshAuthorizationStatus()
         guard hasReadAccess else { return nil }
 
         let googleIDs = Set(googleAccountCalendars().map(\.calendarIdentifier))
-        let candidates = eventStore.calendars(for: .event).filter { cal in
+        let candidates = backing.calendars().filter { cal in
             guard cal.allowsContentModifications else { return false }
             if cal.calendarIdentifier == avoidCalendarIdentifier { return false }
             if excludeGoogleCalendars && googleIDs.contains(cal.calendarIdentifier) { return false }
@@ -155,9 +358,7 @@ final class CalendarFreeTimeService {
             return chosen
         }
 
-        if let defaultCal = eventStore.defaultCalendarForNewEvents,
-           candidates.contains(where: { $0.calendarIdentifier == defaultCal.calendarIdentifier }),
-           !googleIDs.contains(defaultCal.calendarIdentifier) {
+        if let defaultCal = candidates.first(where: { $0.isDefaultForNewEvents && !googleIDs.contains($0.calendarIdentifier) }) {
             return defaultCal
         }
 
@@ -174,6 +375,7 @@ final class CalendarFreeTimeService {
         preferences: CozyPreferences,
         today referenceDate: Date = Date(),
         avoidCalendarIdentifier: String? = nil,
+        allowSlotChangingWrites: Bool = true,
         calendar: Calendar = DateHelpers.calendar
     ) -> EKSyncOutcome {
         refreshAuthorizationStatus()
@@ -212,6 +414,9 @@ final class CalendarFreeTimeService {
             busyIntervalsByDay: busyIntervalsByDay,
             preferences: preferences,
             today: referenceDate,
+            allowSlotChangingWrites: allowSlotChangingWrites,
+            cleanupOnly: false,
+            sweepStrandedOAuthEvents: false,
             calendar: calendar,
             getEventID: { $0.appleCalendarEventIdentifier },
             setEventID: { $0.appleCalendarEventIdentifier = $1 },
@@ -225,11 +430,11 @@ final class CalendarFreeTimeService {
     // MARK: - Zero-Config iPhone Google Account Bridge (EventKit Google Source)
 
     /// Returns Google / Gmail calendars connected in iPhone Settings -> Calendar -> Accounts.
-    func googleAccountCalendars() -> [EKCalendar] {
+    func googleAccountCalendars() -> [BackingCalendarInfo] {
         refreshAuthorizationStatus()
         guard hasReadAccess else { return [] }
-        return eventStore.calendars(for: .event).filter { cal in
-            let sourceTitle = cal.source.title.lowercased()
+        return backing.calendars().filter { cal in
+            let sourceTitle = cal.sourceTitle.lowercased()
             let calTitle = cal.title.lowercased()
             return sourceTitle.contains("google")
                 || sourceTitle.contains("gmail")
@@ -238,7 +443,7 @@ final class CalendarFreeTimeService {
         }
     }
 
-    func writableGoogleBridgeCalendar() -> EKCalendar? {
+    func writableGoogleBridgeCalendar() -> BackingCalendarInfo? {
         let googleCals = googleAccountCalendars().filter { $0.allowsContentModifications }
         if let primaryMatch = googleCals.first(where: { $0.title.contains("@") }) {
             return primaryMatch
@@ -260,7 +465,7 @@ final class CalendarFreeTimeService {
             to: endDate,
             wakingStartHour: wakingStartHour,
             wakingEndHour: wakingEndHour,
-            calendars: googleCals,
+            calendarIdentifiers: googleCals.map(\.calendarIdentifier),
             calendar: calendar
         )
     }
@@ -270,6 +475,8 @@ final class CalendarFreeTimeService {
         busyIntervalsByDay: [Date: [(Date, Date)]],
         preferences: CozyPreferences,
         today referenceDate: Date = Date(),
+        allowSlotChangingWrites: Bool = true,
+        sweepStrandedOAuthEvents: Bool = false,
         calendar: Calendar = DateHelpers.calendar
     ) -> EKSyncOutcome {
         refreshAuthorizationStatus()
@@ -292,26 +499,237 @@ final class CalendarFreeTimeService {
             )
         }
 
-        return syncOccurrencesToEKCalendar(
+        let outcome = syncOccurrencesToEKCalendar(
             channel: .googleBridge,
             targetCalendar: targetCalendar,
             occurrences: occurrences,
             busyIntervalsByDay: busyIntervalsByDay,
             preferences: preferences,
             today: referenceDate,
+            allowSlotChangingWrites: allowSlotChangingWrites,
+            cleanupOnly: false,
+            sweepStrandedOAuthEvents: sweepStrandedOAuthEvents,
             calendar: calendar,
             getEventID: { $0.syncedEKEventIdentifier },
             setEventID: { $0.syncedEKEventIdentifier = $1 },
             getDestination: { $0.googleBridgeSyncedDestination },
             setDestination: { $0.googleBridgeSyncedDestination = $1 },
             getSignature: { $0.lastCalendarSyncSignature },
-            setSignature: { $0.lastCalendarSyncSignature = $1 }
+            setSignature: { occ, newSig in
+                if let newSig {
+                    occ.lastCalendarSyncSignature = newSig
+                } else if occ.lastCalendarSyncSignature?.hasPrefix("google-bridge|") == true {
+                    occ.lastCalendarSyncSignature = nil
+                }
+            }
         )
+        if sweepStrandedOAuthEvents && outcome.failed == 0 {
+            preferences.needsGoogleOAuthChannelSweep = false
+        }
+        return outcome
+    }
+
+    /// Removes all EventKit events & queued deletions belonging to an inactive channel (e.g. after switching `googleSyncMode`
+    /// from `.iosGoogleAccount` to `.oauthREST`, or turning push off), clearing local metadata ONLY after confirmed commit.
+    func cleanupChannelEvents(
+        channel: CozySyncChannel,
+        occurrences: [TaskOccurrence],
+        preferences: CozyPreferences,
+        today referenceDate: Date = Date(),
+        calendar: Calendar = DateHelpers.calendar
+    ) -> EKSyncOutcome {
+        refreshAuthorizationStatus()
+        guard hasReadAccess else {
+            return EKSyncOutcome(
+                upserted: 0,
+                removed: 0,
+                failed: 0,
+                calendarTitle: nil,
+                errorMessage: nil
+            )
+        }
+
+        let targetCal: BackingCalendarInfo? = {
+            switch channel {
+            case .googleBridge:
+                if let writable = writableGoogleBridgeCalendar() {
+                    return writable
+                }
+                let savedCalIDs = occurrences.compactMap { occ -> String? in
+                    guard let dest = occ.googleBridgeSyncedDestination, dest.hasPrefix("google-bridge|") else { return nil }
+                    return String(dest.dropFirst("google-bridge|".count))
+                }
+                return backing.calendars().first { savedCalIDs.contains($0.calendarIdentifier) }
+            case .apple:
+                if let target = targetAppleCalendar(preferredIdentifier: preferences.appleTargetCalendarIdentifier) {
+                    return target
+                }
+                let savedCalIDs = occurrences.compactMap { occ -> String? in
+                    guard let dest = occ.appleSyncedDestination, dest.hasPrefix("apple|") else { return nil }
+                    return String(dest.dropFirst("apple|".count))
+                }
+                return backing.calendars().first { savedCalIDs.contains($0.calendarIdentifier) }
+            case .googleOAuth:
+                return nil
+            }
+        }()
+
+        guard let targetCalendar = targetCal else {
+            return drainDirectIdentifierRemovalsOnly(
+                channel: channel,
+                occurrences: occurrences,
+                preferences: preferences
+            )
+        }
+
+        let outcome: EKSyncOutcome
+        switch channel {
+        case .googleBridge:
+            outcome = syncOccurrencesToEKCalendar(
+                channel: .googleBridge,
+                targetCalendar: targetCalendar,
+                occurrences: occurrences,
+                busyIntervalsByDay: [:],
+                preferences: preferences,
+                today: referenceDate,
+                allowSlotChangingWrites: false,
+                cleanupOnly: true,
+                sweepStrandedOAuthEvents: false,
+                calendar: calendar,
+                getEventID: { $0.syncedEKEventIdentifier },
+                setEventID: { $0.syncedEKEventIdentifier = $1 },
+                getDestination: { $0.googleBridgeSyncedDestination },
+                setDestination: { $0.googleBridgeSyncedDestination = $1 },
+                getSignature: { $0.lastCalendarSyncSignature },
+                setSignature: { occ, newSig in
+                    if let newSig {
+                        occ.lastCalendarSyncSignature = newSig
+                    } else if occ.lastCalendarSyncSignature?.hasPrefix("google-bridge|") == true {
+                        occ.lastCalendarSyncSignature = nil
+                    }
+                }
+            )
+            if outcome.failed == 0 {
+                preferences.needsGoogleBridgeChannelSweep = false
+            }
+        case .apple:
+            outcome = syncOccurrencesToEKCalendar(
+                channel: .apple,
+                targetCalendar: targetCalendar,
+                occurrences: occurrences,
+                busyIntervalsByDay: [:],
+                preferences: preferences,
+                today: referenceDate,
+                allowSlotChangingWrites: false,
+                cleanupOnly: true,
+                sweepStrandedOAuthEvents: false,
+                calendar: calendar,
+                getEventID: { $0.appleCalendarEventIdentifier },
+                setEventID: { $0.appleCalendarEventIdentifier = $1 },
+                getDestination: { $0.appleSyncedDestination },
+                setDestination: { $0.appleSyncedDestination = $1 },
+                getSignature: { $0.lastAppleCalendarSyncSignature },
+                setSignature: { $0.lastAppleCalendarSyncSignature = $1 }
+            )
+            if outcome.failed == 0 {
+                preferences.needsAppleChannelSweep = false
+            }
+        case .googleOAuth:
+            outcome = EKSyncOutcome(upserted: 0, removed: 0, failed: 0, calendarTitle: nil, errorMessage: nil)
+        }
+        return outcome
+    }
+
+    private func drainDirectIdentifierRemovalsOnly(
+        channel: CozySyncChannel,
+        occurrences: [TaskOccurrence],
+        preferences: CozyPreferences
+    ) -> EKSyncOutcome {
+        var stagedRemovals = 0
+        var failures = 0
+        var failureReason: String?
+        var drained: Set<CozyPreferences.PendingEKEventDeletion> = []
+        var removedIDs: Set<String> = []
+
+        for pending in preferences.pendingEKDeletions where pending.channelRaw == channel.rawValue {
+            if let existing = backing.event(withIdentifier: pending.eventIdentifier) {
+                do {
+                    try backing.remove(existing)
+                    removedIDs.insert(pending.eventIdentifier)
+                    drained.insert(pending)
+                    stagedRemovals += 1
+                } catch {
+                    failures += 1
+                    failureReason = error.localizedDescription
+                }
+            } else {
+                drained.insert(pending)
+            }
+        }
+
+        var clearOccurrences: [TaskOccurrence] = []
+        for occ in occurrences {
+            let savedID = (channel == .googleBridge) ? occ.syncedEKEventIdentifier : occ.appleCalendarEventIdentifier
+            guard let eid = savedID, !eid.isEmpty else { continue }
+            if removedIDs.contains(eid) {
+                clearOccurrences.append(occ)
+                continue
+            }
+            if let existing = backing.event(withIdentifier: eid) {
+                do {
+                    try backing.remove(existing)
+                    removedIDs.insert(eid)
+                    stagedRemovals += 1
+                    clearOccurrences.append(occ)
+                } catch {
+                    preferences.enqueueEKDeletion(.init(channelRaw: channel.rawValue, eventIdentifier: eid))
+                    failures += 1
+                    failureReason = error.localizedDescription
+                }
+            } else {
+                clearOccurrences.append(occ)
+            }
+        }
+
+        if stagedRemovals > 0 {
+            do {
+                try backing.commit()
+            } catch {
+                backing.reset()
+                return EKSyncOutcome(
+                    upserted: 0,
+                    removed: 0,
+                    failed: failures + stagedRemovals,
+                    calendarTitle: nil,
+                    errorMessage: "Calendar commit failed: \(error.localizedDescription)"
+                )
+            }
+        }
+
+        for occ in clearOccurrences {
+            if channel == .googleBridge {
+                occ.syncedEKEventIdentifier = nil
+                occ.googleBridgeSyncedDestination = nil
+                if occ.lastCalendarSyncSignature?.hasPrefix("google-bridge|") == true {
+                    occ.lastCalendarSyncSignature = nil
+                }
+            } else if channel == .apple {
+                occ.appleCalendarEventIdentifier = nil
+                occ.appleSyncedDestination = nil
+                occ.lastAppleCalendarSyncSignature = nil
+            }
+        }
+        preferences.removeConfirmedEKDeletions(drained)
+        if failures == 0 {
+            if channel == .googleBridge { preferences.needsGoogleBridgeChannelSweep = false }
+            if channel == .apple { preferences.needsAppleChannelSweep = false }
+        }
+        return EKSyncOutcome(upserted: 0, removed: stagedRemovals, failed: failures, calendarTitle: nil, errorMessage: failureReason)
     }
 
     private struct StagedOccurrenceMetadata {
         let occurrence: TaskOccurrence
-        let eventRef: EKEvent?
+        let eventRef: BackingEventRecord?
         let clearMetadata: Bool
         let destinationKey: String?
         let signature: String?
@@ -319,11 +737,14 @@ final class CalendarFreeTimeService {
 
     private func syncOccurrencesToEKCalendar(
         channel: CozySyncChannel,
-        targetCalendar: EKCalendar,
+        targetCalendar: BackingCalendarInfo,
         occurrences: [TaskOccurrence],
         busyIntervalsByDay: [Date: [(Date, Date)]],
         preferences: CozyPreferences,
         today referenceDate: Date,
+        allowSlotChangingWrites: Bool,
+        cleanupOnly: Bool,
+        sweepStrandedOAuthEvents: Bool,
         calendar: Calendar,
         getEventID: (TaskOccurrence) -> String?,
         setEventID: (TaskOccurrence, String?) -> Void,
@@ -340,6 +761,7 @@ final class CalendarFreeTimeService {
 
         var stagedUpserts = 0
         var stagedRemovals = 0
+        var deferredWrites = 0
         var operationFailures = 0
         var failureReason: String?
         var removedEventIDs: Set<String> = []
@@ -356,40 +778,45 @@ final class CalendarFreeTimeService {
         // 0. Detect destination calendar switches so old-calendar events are queued for removal
         //    and tasks are never silently skipped on the newly selected calendar.
         var migratedOldEventIDsToRemove: Set<String> = []
-        for occ in occurrences {
-            if let oldDest = getDestination(occ), oldDest != destinationKey,
-               let oldID = getEventID(occ), !oldID.isEmpty {
-                migratedOldEventIDsToRemove.insert(oldID)
+        if !cleanupOnly {
+            for occ in occurrences {
+                if let oldDest = getDestination(occ), oldDest != destinationKey,
+                   let oldID = getEventID(occ), !oldID.isEmpty {
+                    migratedOldEventIDsToRemove.insert(oldID)
+                }
             }
         }
 
-        let activeWindowOccurrences = occurrences
-            .filter { occ in
-                guard occ.status != .skipped else { return false }
-                let day = effectiveOccurrenceDay(occ)
-                return day >= minSyncDay && day <= maxSyncDay
-            }
-            .sorted {
-                let d0 = effectiveOccurrenceDay($0)
-                let d1 = effectiveOccurrenceDay($1)
-                if d0 != d1 { return d0 < d1 }
-                if $0.displayTitle != $1.displayTitle { return $0.displayTitle < $1.displayTitle }
-                return $0.id.uuidString < $1.id.uuidString
-            }
+        let activeWindowOccurrences: [TaskOccurrence] = cleanupOnly
+            ? []
+            : occurrences
+                .filter { occ in
+                    guard occ.status != .skipped else { return false }
+                    let day = effectiveOccurrenceDay(occ)
+                    return day >= minSyncDay && day <= maxSyncDay
+                }
+                .sorted {
+                    let d0 = effectiveOccurrenceDay($0)
+                    let d1 = effectiveOccurrenceDay($1)
+                    if d0 != d1 { return d0 < d1 }
+                    if $0.displayTitle != $1.displayTitle { return $0.displayTitle < $1.displayTitle }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
 
         let activeIDs = Set(activeWindowOccurrences.map(\.id))
 
         // 1. Drain any persisted pending deletions for this channel first
-        let existingPendingQueue = preferences.pendingEKDeletions
+        let pendingSnapshotToAttempt = preferences.pendingEKDeletions
         var drainedPendingItems: Set<CozyPreferences.PendingEKEventDeletion> = []
-        for pending in existingPendingQueue where pending.channelRaw == channel.rawValue {
+        for pending in pendingSnapshotToAttempt where pending.channelRaw == channel.rawValue {
             if removedEventIDs.contains(pending.eventIdentifier) {
                 drainedPendingItems.insert(pending)
                 continue
             }
-            if let staleEvent = eventStore.event(withIdentifier: pending.eventIdentifier) {
+            if let staleEvent = backing.event(withIdentifier: pending.eventIdentifier) {
                 do {
-                    try eventStore.remove(staleEvent, span: .thisEvent, commit: false)
+                    try backing.remove(staleEvent)
+                    // Mark removed ONLY after `backing.remove` succeeds!
                     removedEventIDs.insert(pending.eventIdentifier)
                     drainedPendingItems.insert(pending)
                     stagedRemovals += 1
@@ -398,22 +825,20 @@ final class CalendarFreeTimeService {
                     failureReason = error.localizedDescription
                 }
             } else {
-                // Already deleted from EventKit
+                // Already absent from EventKit
                 drainedPendingItems.insert(pending)
             }
         }
 
         // Remove any old-destination events caused by switching Apple/Bridge calendars
         for oldID in migratedOldEventIDsToRemove where !removedEventIDs.contains(oldID) {
-            if let oldEvent = eventStore.event(withIdentifier: oldID) {
+            if let oldEvent = backing.event(withIdentifier: oldID) {
                 do {
-                    try eventStore.remove(oldEvent, span: .thisEvent, commit: false)
+                    try backing.remove(oldEvent)
                     removedEventIDs.insert(oldID)
                     stagedRemovals += 1
                 } catch {
-                    var queue = preferences.pendingEKDeletions
-                    queue.append(.init(channelRaw: channel.rawValue, eventIdentifier: oldID))
-                    preferences.pendingEKDeletions = queue
+                    preferences.enqueueEKDeletion(.init(channelRaw: channel.rawValue, eventIdentifier: oldID))
                     operationFailures += 1
                     failureReason = error.localizedDescription
                 }
@@ -421,46 +846,59 @@ final class CalendarFreeTimeService {
         }
 
         // 2. Scan existing Cozy-managed events on targetCalendar OWNED BY THIS CHANNEL ONLY
-        //    (never touching OAuth-created Google events or another channel's events), and deduplicate!
-        var existingByOccID: [UUID: EKEvent] = [:]
-        let predicate = eventStore.predicateForEvents(withStart: minSyncDay, end: queryEnd, calendars: [targetCalendar])
-        for event in eventStore.events(matching: predicate) {
-            guard Self.eventBelongsToChannel(event, channel: channel) else {
+        //    (plus stranded `.googleOAuth` events ONLY when explicitly sweeping after an offline/signed-out mode switch),
+        //    and deduplicate!
+        var existingByOccID: [UUID: BackingEventRecord] = [:]
+        for event in backing.events(from: minSyncDay, to: queryEnd, calendarIdentifiers: [targetCalendar.calendarIdentifier]) {
+            let belongsToActiveChannel = Self.recordBelongsToChannel(event, channel: channel)
+            let isSweptOAuthEvent = sweepStrandedOAuthEvents
+                && channel == .googleBridge
+                && Self.recordBelongsToChannel(event, channel: .googleOAuth)
+
+            guard belongsToActiveChannel || isSweptOAuthEvent else {
                 continue
             }
-            if let occID = Self.extractCozyOccurrenceID(fromURL: event.url, notes: event.notes),
+
+            if belongsToActiveChannel,
+               let occID = Self.extractCozyOccurrenceID(fromURL: event.url, notes: event.notes),
                activeIDs.contains(occID) {
                 if existingByOccID[occID] == nil {
                     existingByOccID[occID] = event
                 } else {
                     // Duplicate event for the same occurrence on this channel -> remove duplicate
                     do {
-                        if let eid = event.eventIdentifier {
+                        try backing.remove(event)
+                        if let eid = event.resolvedEventIdentifier, !eid.isEmpty {
                             removedEventIDs.insert(eid)
                         }
-                        try eventStore.remove(event, span: .thisEvent, commit: false)
                         stagedRemovals += 1
                     } catch {
+                        if let eid = event.resolvedEventIdentifier, !eid.isEmpty {
+                            preferences.enqueueEKDeletion(.init(channelRaw: channel.rawValue, eventIdentifier: eid))
+                        }
                         operationFailures += 1
                         failureReason = error.localizedDescription
                     }
                 }
             } else {
                 do {
-                    if let eid = event.eventIdentifier {
+                    try backing.remove(event)
+                    if let eid = event.resolvedEventIdentifier, !eid.isEmpty {
                         removedEventIDs.insert(eid)
                     }
-                    try eventStore.remove(event, span: .thisEvent, commit: false)
                     stagedRemovals += 1
                 } catch {
+                    if let eid = event.resolvedEventIdentifier, !eid.isEmpty {
+                        preferences.enqueueEKDeletion(.init(channelRaw: channel.rawValue, eventIdentifier: eid))
+                    }
                     operationFailures += 1
                     failureReason = error.localizedDescription
                 }
             }
         }
 
-        // 3. Stage cleanup of tracked identifiers on skipped or out-of-window occurrences
-        //    (retaining the saved event ID if removal fails!)
+        // 3. Stage cleanup of tracked identifiers on skipped, out-of-window, or cleanup-only occurrences
+        //    (NEVER clearing saved tracking metadata if removal threw!)
         for occ in occurrences where !activeIDs.contains(occ.id) {
             guard let savedID = getEventID(occ), !savedID.isEmpty else { continue }
             if removedEventIDs.contains(savedID) {
@@ -475,9 +913,9 @@ final class CalendarFreeTimeService {
                 )
                 continue
             }
-            if let staleEvent = eventStore.event(withIdentifier: savedID) {
+            if let staleEvent = backing.event(withIdentifier: savedID) {
                 do {
-                    try eventStore.remove(staleEvent, span: .thisEvent, commit: false)
+                    try backing.remove(staleEvent)
                     removedEventIDs.insert(savedID)
                     stagedRemovals += 1
                     stagedMetadataUpdates.append(
@@ -490,6 +928,7 @@ final class CalendarFreeTimeService {
                         )
                     )
                 } catch {
+                    preferences.enqueueEKDeletion(.init(channelRaw: channel.rawValue, eventIdentifier: savedID))
                     operationFailures += 1
                     failureReason = error.localizedDescription
                 }
@@ -507,19 +946,45 @@ final class CalendarFreeTimeService {
             }
         }
 
-        // 4. Stage upserts for active occurrences in open slots on targetCalendar
+        // 4. Stage upserts for active occurrences on targetCalendar
         for occ in activeWindowOccurrences {
             let effectiveDay = effectiveOccurrenceDay(occ)
-            let slot = Self.assignSlotForTask(
-                on: effectiveDay,
-                durationMinutes: occ.displayDurationMinutes,
-                preferredStartHour: preferences.googleTaskPushStartHour,
-                wakingStartHour: preferences.wakingStartHour,
-                wakingEndHour: preferences.wakingEndHour,
-                existingBusyIntervals: placedByDay[effectiveDay] ?? [],
-                calendar: calendar
-            )
-            placedByDay[effectiveDay, default: []].append(slot)
+
+            let matchedExisting: BackingEventRecord? = {
+                if getDestination(occ) == destinationKey,
+                   let savedID = getEventID(occ),
+                   let fetched = backing.event(withIdentifier: savedID),
+                   fetched.calendarIdentifier == targetCalendar.calendarIdentifier {
+                    return fetched
+                }
+                return existingByOccID[occ.id]
+            }()
+
+            let slot: (Date, Date)
+            if allowSlotChangingWrites {
+                let assigned = Self.assignSlotForTask(
+                    on: effectiveDay,
+                    durationMinutes: occ.displayDurationMinutes,
+                    preferredStartHour: preferences.googleTaskPushStartHour,
+                    wakingStartHour: preferences.wakingStartHour,
+                    wakingEndHour: preferences.wakingEndHour,
+                    existingBusyIntervals: placedByDay[effectiveDay] ?? [],
+                    calendar: calendar
+                )
+                placedByDay[effectiveDay, default: []].append(assigned)
+                slot = assigned
+            } else {
+                // Busy-time source was unavailable: NEVER assign or move slots into potentially unknown meetings!
+                // Only allow in-place completion/title/notes updates when an event already exists on `effectiveDay`.
+                guard let existing = matchedExisting,
+                      existing.calendarIdentifier == targetCalendar.calendarIdentifier,
+                      DateHelpers.isSameDay(existing.startDate, effectiveDay, calendar: calendar),
+                      existing.endDate > existing.startDate else {
+                    deferredWrites += 1
+                    continue
+                }
+                slot = (existing.startDate, existing.endDate)
+            }
 
             let desiredTitle = occ.isCompleted
                 ? "✅ \(occ.displayEmoji) \(occ.displayTitle)"
@@ -538,18 +1003,8 @@ final class CalendarFreeTimeService {
                 notes: desiredNotes
             )
 
-            let matchedExisting: EKEvent? = {
-                if getDestination(occ) == destinationKey,
-                   let savedID = getEventID(occ),
-                   let fetched = eventStore.event(withIdentifier: savedID),
-                   fetched.calendar.calendarIdentifier == targetCalendar.calendarIdentifier {
-                    return fetched
-                }
-                return existingByOccID[occ.id]
-            }()
-
             if let existing = matchedExisting,
-               existing.calendar.calendarIdentifier == targetCalendar.calendarIdentifier,
+               existing.calendarIdentifier == targetCalendar.calendarIdentifier,
                getDestination(occ) == destinationKey,
                getSignature(occ) == signature {
                 stagedMetadataUpdates.append(
@@ -564,8 +1019,8 @@ final class CalendarFreeTimeService {
                 continue
             }
 
-            let event = matchedExisting ?? EKEvent(eventStore: eventStore)
-            event.calendar = targetCalendar
+            let event = matchedExisting ?? backing.makeNewEvent(in: targetCalendar.calendarIdentifier)
+            event.calendarIdentifier = targetCalendar.calendarIdentifier
             event.title = desiredTitle
             event.startDate = slot.0
             event.endDate = slot.1
@@ -573,7 +1028,7 @@ final class CalendarFreeTimeService {
             event.notes = desiredNotes
 
             do {
-                try eventStore.save(event, span: .thisEvent, commit: false)
+                try backing.save(event)
                 stagedUpserts += 1
                 stagedMetadataUpdates.append(
                     StagedOccurrenceMetadata(
@@ -593,26 +1048,27 @@ final class CalendarFreeTimeService {
         // 5. Commit EventKit changes BEFORE mutating local sync metadata!
         if stagedUpserts > 0 || stagedRemovals > 0 {
             do {
-                try eventStore.commit()
+                try backing.commit()
             } catch {
-                eventStore.reset()
+                backing.reset()
                 return EKSyncOutcome(
                     upserted: 0,
                     removed: 0,
                     failed: operationFailures + stagedUpserts + stagedRemovals,
+                    deferred: deferredWrites,
                     calendarTitle: targetCalendar.title,
                     errorMessage: "Calendar commit failed: \(error.localizedDescription)"
                 )
             }
         }
 
-        // 6. Commit succeeded: apply staged metadata & drain completed pending deletions
+        // 6. Commit succeeded: apply staged metadata & remove ONLY confirmed pending deletions from the live queue
         for update in stagedMetadataUpdates {
             if update.clearMetadata {
                 setEventID(update.occurrence, nil)
                 setDestination(update.occurrence, nil)
                 setSignature(update.occurrence, nil)
-            } else if let eventID = update.eventRef?.eventIdentifier, !eventID.isEmpty {
+            } else if let eventID = update.eventRef?.resolvedEventIdentifier, !eventID.isEmpty {
                 setEventID(update.occurrence, eventID)
                 setDestination(update.occurrence, update.destinationKey)
                 setSignature(update.occurrence, update.signature)
@@ -620,13 +1076,14 @@ final class CalendarFreeTimeService {
         }
 
         if !drainedPendingItems.isEmpty {
-            preferences.pendingEKDeletions = existingPendingQueue.filter { !drainedPendingItems.contains($0) }
+            preferences.removeConfirmedEKDeletions(drainedPendingItems)
         }
 
         return EKSyncOutcome(
             upserted: stagedUpserts,
             removed: stagedRemovals,
             failed: operationFailures,
+            deferred: deferredWrites,
             calendarTitle: targetCalendar.title,
             errorMessage: failureReason
         )
@@ -643,10 +1100,18 @@ final class CalendarFreeTimeService {
     }
 
     nonisolated static func isCozyManagedEvent(_ event: EKEvent) -> Bool {
-        if event.url?.scheme?.lowercased() == cozyURLScheme {
+        isCozyManagedMetadata(url: event.url, notes: event.notes)
+    }
+
+    nonisolated static func isCozyManagedRecord(_ record: BackingEventRecord) -> Bool {
+        isCozyManagedMetadata(url: record.url, notes: record.notes)
+    }
+
+    nonisolated static func isCozyManagedMetadata(url: URL?, notes: String?) -> Bool {
+        if url?.scheme?.lowercased() == cozyURLScheme {
             return true
         }
-        if let notes = event.notes, notes.contains(cozyEventMarker) {
+        if let notes, notes.contains(cozyEventMarker) {
             return true
         }
         return false
@@ -703,6 +1168,11 @@ final class CalendarFreeTimeService {
     nonisolated static func eventBelongsToChannel(_ event: EKEvent, channel: CozySyncChannel) -> Bool {
         guard isCozyManagedEvent(event) else { return false }
         return metadataBelongsToChannel(url: event.url, notes: event.notes, targetChannel: channel)
+    }
+
+    nonisolated static func recordBelongsToChannel(_ record: BackingEventRecord, channel: CozySyncChannel) -> Bool {
+        guard isCozyManagedRecord(record) else { return false }
+        return metadataBelongsToChannel(url: record.url, notes: record.notes, targetChannel: channel)
     }
 
     nonisolated static func metadataBelongsToChannel(

@@ -66,11 +66,15 @@ final class CozyPreferences {
     var confettiEnabled: Bool = true
     var addFriendlyMode: Bool = false
 
-    // MARK: - Durable Sync Queue, Busy Cache & Historical Streak Archive
+    // MARK: - Durable Sync Queue, Busy Cache, Mode Migration & Historical Streak Archive
     var pendingGoogleDeletionsJSON: String = "[]"
     var pendingEKDeletionsJSON: String = "[]"
     var cachedGoogleBusySnapshotJSON: String = ""
     var historicalStreakArchiveJSON: String = ""
+    var appliedDataMigrationVersion: Int = 0
+    var needsGoogleOAuthChannelSweep: Bool = false
+    var needsGoogleBridgeChannelSweep: Bool = false
+    var needsAppleChannelSweep: Bool = false
 
     init(
         id: UUID = UUID(),
@@ -174,7 +178,27 @@ final class CozyPreferences {
 
     var googleSyncMode: GoogleCalendarSyncMode {
         get { GoogleCalendarSyncMode(rawValue: googleSyncModeRaw) ?? .oauthREST }
-        set { googleSyncModeRaw = newValue.rawValue }
+        set {
+            let previous = GoogleCalendarSyncMode(rawValue: googleSyncModeRaw) ?? .oauthREST
+            if previous != newValue {
+                switch previous {
+                case .oauthREST:
+                    needsGoogleOAuthChannelSweep = true
+                case .iosGoogleAccount:
+                    needsGoogleBridgeChannelSweep = true
+                }
+            }
+            googleSyncModeRaw = newValue.rawValue
+        }
+    }
+
+    /// True when any queued remote calendar deletion or inactive-channel sweep still needs to execute.
+    var hasPendingCalendarCleanup: Bool {
+        needsGoogleOAuthChannelSweep
+            || needsGoogleBridgeChannelSweep
+            || needsAppleChannelSweep
+            || !pendingGoogleDeletions.isEmpty
+            || !pendingEKDeletions.isEmpty
     }
 
     /// True whenever Apple Calendar busy sync or Google Calendar busy sync is active.
@@ -187,9 +211,9 @@ final class CozyPreferences {
         pushTasksToGoogleCalendar || pushTasksToAppleCalendar
     }
 
-    /// True whenever any Google or Apple Calendar read or push integration is enabled.
+    /// True whenever any Google or Apple Calendar read, push, or pending cleanup integration is enabled.
     var hasAnyCalendarIntegrationEnabled: Bool {
-        useCalendarSync || pushTasksToAppleCalendar || useGoogleCalendarSync || pushTasksToGoogleCalendar
+        useCalendarSync || pushTasksToAppleCalendar || useGoogleCalendarSync || pushTasksToGoogleCalendar || hasPendingCalendarCleanup
     }
 
     /// True when task/schedule changes should automatically sync to enabled Google and/or Apple Calendars.
@@ -264,10 +288,112 @@ final class CozyPreferences {
         let eventIdentifier: String
     }
 
+    struct CachedBusyInterval: Codable, Equatable, Hashable {
+        let start: Date
+        let end: Date
+    }
+
     struct CachedGoogleBusySnapshot: Codable, Equatable {
         let destinationKey: String
         let fetchedAt: Date
         let busyMinutesByDayKey: [String: Int]
+        let busyIntervalsByDayKey: [String: [CachedBusyInterval]]
+        let hasCompleteIntervals: Bool
+
+        init(
+            destinationKey: String,
+            fetchedAt: Date,
+            busyMinutesByDayKey: [String: Int],
+            busyIntervalsByDayKey: [String: [CachedBusyInterval]] = [:],
+            hasCompleteIntervals: Bool = true
+        ) {
+            self.destinationKey = destinationKey
+            self.fetchedAt = fetchedAt
+            self.busyMinutesByDayKey = busyMinutesByDayKey
+            self.busyIntervalsByDayKey = busyIntervalsByDayKey
+            self.hasCompleteIntervals = hasCompleteIntervals
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case destinationKey
+            case fetchedAt
+            case busyMinutesByDayKey
+            case busyIntervalsByDayKey
+            case hasCompleteIntervals
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.destinationKey = try container.decode(String.self, forKey: .destinationKey)
+            self.fetchedAt = try container.decode(Date.self, forKey: .fetchedAt)
+            self.busyMinutesByDayKey = (try? container.decode([String: Int].self, forKey: .busyMinutesByDayKey)) ?? [:]
+            self.busyIntervalsByDayKey = (try? container.decodeIfPresent([String: [CachedBusyInterval]].self, forKey: .busyIntervalsByDayKey)) ?? [:]
+            self.hasCompleteIntervals = (try? container.decodeIfPresent(Bool.self, forKey: .hasCompleteIntervals)) ?? false
+        }
+
+        static func make(
+            destinationKey: String,
+            fetchedAt: Date = Date(),
+            intervalsByDay: [Date: [(Date, Date)]],
+            calendar: Calendar
+        ) -> CachedGoogleBusySnapshot {
+            let minutesMap = CalendarFreeTimeService.mergeBusyIntervalsByDay([intervalsByDay])
+            var keyedMinutes: [String: Int] = [:]
+            for (day, mins) in minutesMap {
+                keyedMinutes[DateHelpers.dayKeyString(for: day, calendar: calendar)] = mins
+            }
+
+            var keyedIntervals: [String: [CachedBusyInterval]] = [:]
+            for (day, pairs) in intervalsByDay where !pairs.isEmpty {
+                let dayKey = DateHelpers.dayKeyString(for: day, calendar: calendar)
+                keyedIntervals[dayKey] = pairs
+                    .filter { $0.1 > $0.0 }
+                    .map { CachedBusyInterval(start: $0.0, end: $0.1) }
+            }
+
+            return CachedGoogleBusySnapshot(
+                destinationKey: destinationKey,
+                fetchedAt: fetchedAt,
+                busyMinutesByDayKey: keyedMinutes,
+                busyIntervalsByDayKey: keyedIntervals,
+                hasCompleteIntervals: true
+            )
+        }
+
+        func isFresh(
+            forDestination expectedDestinationKey: String,
+            maxAgeSeconds: TimeInterval,
+            now: Date = Date()
+        ) -> Bool {
+            guard destinationKey == expectedDestinationKey, hasCompleteIntervals else {
+                return false
+            }
+            let age = now.timeIntervalSince(fetchedAt)
+            return age >= -300 && age <= maxAgeSeconds
+        }
+
+        func freshIntervalsByDay(
+            forDestination expectedDestinationKey: String,
+            maxAgeSeconds: TimeInterval,
+            now: Date = Date(),
+            calendar: Calendar = DateHelpers.calendar
+        ) -> [Date: [(Date, Date)]]? {
+            guard isFresh(forDestination: expectedDestinationKey, maxAgeSeconds: maxAgeSeconds, now: now) else {
+                return nil
+            }
+            var reconstructed: [Date: [(Date, Date)]] = [:]
+            for (dayKey, items) in busyIntervalsByDayKey {
+                guard let day = DateHelpers.date(fromDayKey: dayKey, calendar: calendar) else { continue }
+                let valid = items.compactMap { item -> (Date, Date)? in
+                    guard item.end > item.start else { return nil }
+                    return (item.start, item.end)
+                }
+                if !valid.isEmpty {
+                    reconstructed[day] = valid
+                }
+            }
+            return reconstructed
+        }
     }
 
     struct HistoricalStreakArchive: Codable, Equatable {
@@ -289,7 +415,8 @@ final class CozyPreferences {
             return decoded
         }
         set {
-            let unique = Array(Set(newValue))
+            var seen: Set<PendingGoogleEventDeletion> = []
+            let unique = newValue.filter { seen.insert($0).inserted }
             if let data = try? JSONEncoder().encode(unique),
                let json = String(data: data, encoding: .utf8) {
                 pendingGoogleDeletionsJSON = json
@@ -306,12 +433,47 @@ final class CozyPreferences {
             return decoded
         }
         set {
-            let unique = Array(Set(newValue))
+            var seen: Set<PendingEKEventDeletion> = []
+            let unique = newValue.filter { seen.insert($0).inserted }
             if let data = try? JSONEncoder().encode(unique),
                let json = String(data: data, encoding: .utf8) {
                 pendingEKDeletionsJSON = json
             }
         }
+    }
+
+    /// Enqueues a Google deletion without clobbering concurrent queue items.
+    func enqueueGoogleDeletion(_ item: PendingGoogleEventDeletion) {
+        guard !item.eventID.isEmpty else { return }
+        var current = pendingGoogleDeletions
+        if !current.contains(item) {
+            current.append(item)
+            pendingGoogleDeletions = current
+        }
+    }
+
+    /// Removes only confirmed deletions from the live `pendingGoogleDeletions` queue, preserving any requests enqueued during async `await`s.
+    func removeConfirmedGoogleDeletions(_ confirmed: Set<PendingGoogleEventDeletion>) {
+        guard !confirmed.isEmpty else { return }
+        let liveQueue = pendingGoogleDeletions
+        pendingGoogleDeletions = liveQueue.filter { !confirmed.contains($0) }
+    }
+
+    /// Enqueues an EventKit deletion without clobbering concurrent queue items.
+    func enqueueEKDeletion(_ item: PendingEKEventDeletion) {
+        guard !item.eventIdentifier.isEmpty else { return }
+        var current = pendingEKDeletions
+        if !current.contains(item) {
+            current.append(item)
+            pendingEKDeletions = current
+        }
+    }
+
+    /// Removes only confirmed deletions from the live `pendingEKDeletions` queue, preserving any retries appended mid-sync.
+    func removeConfirmedEKDeletions(_ confirmed: Set<PendingEKEventDeletion>) {
+        guard !confirmed.isEmpty else { return }
+        let liveQueue = pendingEKDeletions
+        pendingEKDeletions = liveQueue.filter { !confirmed.contains($0) }
     }
 
     var cachedGoogleBusySnapshot: CachedGoogleBusySnapshot? {
@@ -361,19 +523,13 @@ final class CozyPreferences {
             let parsed = Self.parseGoogleDestination(occurrence.googleSyncedDestination)
             let calID = parsed?.calendarID ?? fallbackGoogleCalendarID ?? googleCalendarID
             let accKey = parsed?.accountKey ?? ""
-            var current = pendingGoogleDeletions
-            current.append(PendingGoogleEventDeletion(accountKey: accKey, calendarID: calID, eventID: gEventID))
-            pendingGoogleDeletions = current
+            enqueueGoogleDeletion(PendingGoogleEventDeletion(accountKey: accKey, calendarID: calID, eventID: gEventID))
         }
         if let ekGoogleID = occurrence.syncedEKEventIdentifier, !ekGoogleID.isEmpty {
-            var current = pendingEKDeletions
-            current.append(PendingEKEventDeletion(channelRaw: "google-bridge", eventIdentifier: ekGoogleID))
-            pendingEKDeletions = current
+            enqueueEKDeletion(PendingEKEventDeletion(channelRaw: "google-bridge", eventIdentifier: ekGoogleID))
         }
         if let ekAppleID = occurrence.appleCalendarEventIdentifier, !ekAppleID.isEmpty {
-            var current = pendingEKDeletions
-            current.append(PendingEKEventDeletion(channelRaw: "apple", eventIdentifier: ekAppleID))
-            pendingEKDeletions = current
+            enqueueEKDeletion(PendingEKEventDeletion(channelRaw: "apple", eventIdentifier: ekAppleID))
         }
     }
 
@@ -423,5 +579,19 @@ final class DayCapacityOverride {
             storedTimezoneID: dayTimezoneID,
             calendar: calendar
         ).date
+    }
+
+    @discardableResult
+    func normalizeCivilDates(in calendar: Calendar = DateHelpers.calendar) -> Date {
+        let resolved = DateHelpers.resolveCivilDay(
+            dayKey: dayKey,
+            fallbackDate: date,
+            storedTimezoneID: dayTimezoneID,
+            calendar: calendar
+        )
+        date = resolved.date
+        dayKey = resolved.dayKey
+        dayTimezoneID = resolved.timezoneID
+        return resolved.date
     }
 }
