@@ -261,7 +261,7 @@ struct RootTabView: View {
             }
         }
 
-        let initialBusyByDay = CalendarFreeTimeService.mergedBusyMinutesByDay(intervalSources: localIntervalSources)
+        let initialBusyByDay = CalendarFreeTimeService.mergeBusyIntervalsByDay(localIntervalSources)
         calendarBusyByDay = initialBusyByDay
 
         if canRunImmediateLocalRebalance {

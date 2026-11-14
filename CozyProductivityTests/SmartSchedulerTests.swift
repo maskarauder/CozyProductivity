@@ -2165,7 +2165,7 @@ final class SmartSchedulerTests: XCTestCase {
 
         // Phase 1: Write simulated pre-upgrade rows into an on-disk SQLite SwiftData container
         do {
-            let diskConfig = ModelConfiguration(schema: schema, url: storeURL)
+            let diskConfig = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
             let container1 = try ModelContainer(for: schema, configurations: [diskConfig])
             let ctx1 = container1.mainContext
 
@@ -2195,41 +2195,59 @@ final class SmartSchedulerTests: XCTestCase {
                 calendar: laCalendar
             )
             // Simulate an upgraded SQLite row from 8dde195 where snapshotSchemaVersion == 0,
-            // scheduledDayKey was empty, and non-empty property defaults ("once"/"Once"/"selfCare") populated SQLite!
-            legacyWeeklyOcc.snapshotSchemaVersion = 0
+            // scheduledDate was stored as 23:00 PDT (06:00 UTC next day!) with empty scheduledDayKey,
+            // and non-empty property defaults ("once"/"Once"/"selfCare") populated SQLite!
+            legacyWeeklyOcc.scheduledDate = lateEveningPDT
             legacyWeeklyOcc.scheduledDayKey = ""
+            legacyWeeklyOcc.scheduledTimezoneID = ""
             legacyWeeklyOcc.completedDayKey = nil
+            legacyWeeklyOcc.snapshotSchemaVersion = 0
             legacyWeeklyOcc.recurrenceKindSnapshotRaw = "once"
             legacyWeeklyOcc.recurrenceLabelSnapshot = "Once"
             legacyWeeklyOcc.categorySnapshotRaw = "selfCare"
             ctx1.insert(legacyWeeklyOcc)
             legacyWeeklyOccID = legacyWeeklyOcc.id
 
+            let orchidTemplate = TaskTemplate(
+                title: "Deep water orchids",
+                emoji: "🌺",
+                category: .home,
+                recurrence: .everyNDays,
+                durationMinutes: 20,
+                customIntervalDays: 5,
+                isAutoScheduled: true,
+                anchorDate: lateEveningPDT,
+                calendar: laCalendar
+            )
+            ctx1.insert(orchidTemplate)
+
             let orphanCustomOcc = TaskOccurrence(
                 scheduledDate: lateEveningPDT,
                 periodKey: "custom5:4021",
                 status: .completed,
                 completedAt: lateEveningPDT,
-                template: nil,
-                titleSnapshot: "Deep water orchids",
-                emojiSnapshot: "🌺",
-                durationMinutesSnapshot: 20,
+                template: orchidTemplate,
                 calendar: laCalendar
             )
-            orphanCustomOcc.snapshotSchemaVersion = 0
+            orphanCustomOcc.scheduledDate = lateEveningPDT
             orphanCustomOcc.scheduledDayKey = ""
+            orphanCustomOcc.scheduledTimezoneID = ""
             orphanCustomOcc.completedDayKey = nil
+            orphanCustomOcc.snapshotSchemaVersion = 0
             orphanCustomOcc.recurrenceKindSnapshotRaw = "once"
             orphanCustomOcc.recurrenceLabelSnapshot = "Once"
             orphanCustomOcc.categorySnapshotRaw = ""
             ctx1.insert(orphanCustomOcc)
             orphanCustomOccID = orphanCustomOcc.id
 
+            // Delete `orchidTemplate` before upgrade so `orphanCustomOcc.template` is nil in SQLite
+            ctx1.delete(orchidTemplate)
+
             try ctx1.save()
         }
 
         // Phase 2: Reopen on-disk SQLite store in a fresh ModelContainer, run CozyDataMigrator, then edit & delete template
-        let reopenConfig = ModelConfiguration(schema: schema, url: storeURL)
+        let reopenConfig = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
         let container2 = try ModelContainer(for: schema, configurations: [reopenConfig])
         let ctx2 = container2.mainContext
 
