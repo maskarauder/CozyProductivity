@@ -314,16 +314,41 @@ final class GoogleCalendarService {
         let lowerBound = DateHelpers.addDays(-3, to: today, calendar: calendar)
         let upperBound = DateHelpers.addDays(16, to: today, calendar: calendar)
 
-        let descriptor = FetchDescriptor<TaskOccurrence>(
+        let windowDescriptor = FetchDescriptor<TaskOccurrence>(
             predicate: #Predicate<TaskOccurrence> { occ in
-                (occ.scheduledDate >= lowerBound && occ.scheduledDate <= upperBound)
-                    || occ.bonusForDate != nil
-                    || occ.googleCalendarEventId != nil
-                    || occ.syncedEKEventIdentifier != nil
-                    || occ.appleCalendarEventIdentifier != nil
+                occ.scheduledDate >= lowerBound && occ.scheduledDate <= upperBound
             }
         )
-        return (try? context.fetch(descriptor)) ?? []
+        let bonusDescriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.bonusForDate != nil
+            }
+        )
+        let googleTrackedDescriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.googleCalendarEventId != nil
+            }
+        )
+        let bridgeTrackedDescriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.syncedEKEventIdentifier != nil
+            }
+        )
+        let appleTrackedDescriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.appleCalendarEventIdentifier != nil
+            }
+        )
+
+        var mergedByID: [UUID: TaskOccurrence] = [:]
+        for desc in [windowDescriptor, bonusDescriptor, googleTrackedDescriptor, bridgeTrackedDescriptor, appleTrackedDescriptor] {
+            if let rows = try? context.fetch(desc) {
+                for row in rows {
+                    mergedByID[row.id] = row
+                }
+            }
+        }
+        return Array(mergedByID.values)
     }
 
     // MARK: - Unified Serialized Sync Coordinator (Google & Apple)

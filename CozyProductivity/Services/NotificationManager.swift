@@ -39,13 +39,25 @@ final class NotificationManager {
         let lowerBound = DateHelpers.addDays(-35, to: earliest, calendar: calendar)
         let upperBound = DateHelpers.addDays(60, to: logicalNow, calendar: calendar)
 
-        let descriptor = FetchDescriptor<TaskOccurrence>(
+        let windowDescriptor = FetchDescriptor<TaskOccurrence>(
             predicate: #Predicate<TaskOccurrence> { occ in
-                (occ.scheduledDate >= lowerBound && occ.scheduledDate <= upperBound)
-                    || occ.bonusForDate != nil
+                occ.scheduledDate >= lowerBound && occ.scheduledDate <= upperBound
             }
         )
-        return (try? context.fetch(descriptor)) ?? []
+        let bonusDescriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.bonusForDate != nil
+            }
+        )
+        var mergedByID: [UUID: TaskOccurrence] = [:]
+        for desc in [windowDescriptor, bonusDescriptor] {
+            if let rows = try? context.fetch(desc) {
+                for row in rows {
+                    mergedByID[row.id] = row
+                }
+            }
+        }
+        return Array(mergedByID.values)
     }
 
     func refreshAuthorizationStatus() async {
