@@ -2276,7 +2276,7 @@ final class SmartSchedulerTests: XCTestCase {
         XCTAssertEqual(migratedWeekly.snapshotSchemaVersion, TaskOccurrence.currentSnapshotSchemaVersion)
         XCTAssertEqual(migratedWeekly.scheduledDayKey, "2026-06-10")
         XCTAssertEqual(
-            migratedWeekly.completedLogicalDay(calendar: laCalendar).map { DateHelpers.dayKeyString(for: $0, calendar: laCalendar) },
+            DateHelpers.dayKeyString(for: migratedWeekly.completedLogicalDay(calendar: laCalendar), calendar: laCalendar),
             "2026-06-10"
         )
         XCTAssertEqual(migratedWeekly.displayTitle, "Clean kitchen")
