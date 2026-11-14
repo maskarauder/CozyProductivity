@@ -1,0 +1,522 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B8DEAAC3671624709CD10B15 /* CozyProductivityApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C585688ABE1C92727133D3C0 /* CozyProductivityApp.swift */; };
+		9EAF3E13731EB772F740BF46 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD2FD3CD11A7633D9DD10452 /* RootTabView.swift */; };
+		9F325AFFE359739CD9B59AAA /* CozyTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DC2EE7CE12620407A73130D /* CozyTheme.swift */; };
+		8C901BC9D758B3613C91F62A /* CozyPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71D8F6DC185EBC8DC209DBEE /* CozyPreferences.swift */; };
+		3BDF3E833DE9F375133D7FD9 /* RecurrenceRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88789A2A6969715BF6871077 /* RecurrenceRule.swift */; };
+		F073C5429E2C982720463C3F /* TaskOccurrence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81E6A17A6E17C9AAB1ACD701 /* TaskOccurrence.swift */; };
+		778FAA52C1A18788CD60CD1A /* TaskTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0151A41FEE4B362555999EA /* TaskTemplate.swift */; };
+		10F2652C569C48CA7A103265 /* CalendarFreeTimeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 409F8A940C897CD8E65ED69B /* CalendarFreeTimeService.swift */; };
+		FFF1E88E496C5802A2D3ECDA /* DateHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D68C7972D3FE8557870E06D8 /* DateHelpers.swift */; };
+		43AE92E0DA287B6DAA38B5D2 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20C625C98A69565163F67B5F /* NotificationManager.swift */; };
+		2DBFF7850E6E0005C99D970B /* SmartScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 831C0EC9886EDE871FD0F2A7 /* SmartScheduler.swift */; };
+		CD51F3A5D1AED0B5F526C504 /* SummaryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01155A19088B92DA2A3C22D1 /* SummaryBuilder.swift */; };
+		5021CD1D3D2996F6C8930A86 /* ConfettiCelebrationOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D47066AFA821A9302F56BE4 /* ConfettiCelebrationOverlay.swift */; };
+		DE11EC367FA7450AFC51FD34 /* TaskChecklistCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D9F8DB5D10E7ECC045F1D7F /* TaskChecklistCardView.swift */; };
+		DA0E266F8597CBCF773DDC1F /* TodayChecklistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836F953E4EE44D9040CC54E2 /* TodayChecklistView.swift */; };
+		EA568478D2D7F1045F1B32C1 /* ScheduleOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3708F5D55CA6F844891098D2 /* ScheduleOverviewView.swift */; };
+		6396FC94A77F11C9923C4DD7 /* TaskEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3D8870D4CDC8C2A786B7D0A /* TaskEditorSheet.swift */; };
+		5313669E48BDF39D8DB7E758 /* ReflectionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3103C927BBDACB4508714F2 /* ReflectionsView.swift */; };
+		AD9F9A491925F7A0E5CA5581 /* CozySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 588A77E77423254D06D9439E /* CozySettingsView.swift */; };
+		20647CAC82AD8E55913EC18C /* DayOverrideSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39155883833E15D67C81DA1F /* DayOverrideSheet.swift */; };
+		0616325308B7BBE1BEE1C1E6 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1ABDED51C2BEC029D9DDFA3 /* Assets.xcassets */; };
+		0BFEDDE43C00C82887432F06 /* SmartSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0605FE56F7A80A3BC84CDDD5 /* SmartSchedulerTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B481E41CC10DD7F2DBD1FCB3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4E924900C27DBC8880E4937B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 01D825FAD1AC3A2805C13AF7;
+			remoteInfo = CozyProductivity;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		891604A0F2359B3084CAA20B /* CozyProductivity.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CozyProductivity.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		802D9F6EDD1C59302362A642 /* CozyProductivityTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CozyProductivityTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C585688ABE1C92727133D3C0 /* CozyProductivityApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CozyProductivityApp.swift; sourceTree = "<group>"; };
+		BD2FD3CD11A7633D9DD10452 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		5DC2EE7CE12620407A73130D /* CozyTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CozyTheme.swift; sourceTree = "<group>"; };
+		71D8F6DC185EBC8DC209DBEE /* CozyPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CozyPreferences.swift; sourceTree = "<group>"; };
+		88789A2A6969715BF6871077 /* RecurrenceRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecurrenceRule.swift; sourceTree = "<group>"; };
+		81E6A17A6E17C9AAB1ACD701 /* TaskOccurrence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskOccurrence.swift; sourceTree = "<group>"; };
+		A0151A41FEE4B362555999EA /* TaskTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskTemplate.swift; sourceTree = "<group>"; };
+		409F8A940C897CD8E65ED69B /* CalendarFreeTimeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarFreeTimeService.swift; sourceTree = "<group>"; };
+		D68C7972D3FE8557870E06D8 /* DateHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateHelpers.swift; sourceTree = "<group>"; };
+		20C625C98A69565163F67B5F /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
+		831C0EC9886EDE871FD0F2A7 /* SmartScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartScheduler.swift; sourceTree = "<group>"; };
+		01155A19088B92DA2A3C22D1 /* SummaryBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryBuilder.swift; sourceTree = "<group>"; };
+		1D47066AFA821A9302F56BE4 /* ConfettiCelebrationOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfettiCelebrationOverlay.swift; sourceTree = "<group>"; };
+		6D9F8DB5D10E7ECC045F1D7F /* TaskChecklistCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskChecklistCardView.swift; sourceTree = "<group>"; };
+		836F953E4EE44D9040CC54E2 /* TodayChecklistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayChecklistView.swift; sourceTree = "<group>"; };
+		3708F5D55CA6F844891098D2 /* ScheduleOverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScheduleOverviewView.swift; sourceTree = "<group>"; };
+		A3D8870D4CDC8C2A786B7D0A /* TaskEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskEditorSheet.swift; sourceTree = "<group>"; };
+		B3103C927BBDACB4508714F2 /* ReflectionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReflectionsView.swift; sourceTree = "<group>"; };
+		588A77E77423254D06D9439E /* CozySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CozySettingsView.swift; sourceTree = "<group>"; };
+		39155883833E15D67C81DA1F /* DayOverrideSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DayOverrideSheet.swift; sourceTree = "<group>"; };
+		A1ABDED51C2BEC029D9DDFA3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		0605FE56F7A80A3BC84CDDD5 /* SmartSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartSchedulerTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		BBF0F45747C283D90E6073CC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C4D8A5C928473F07031C16A5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		171D6C198AE40ED4A040BB61 = {
+			isa = PBXGroup;
+			children = (
+				4FD83772435AF0A9E8794D7B /* CozyProductivity */,
+				8BB2184470F6C030B3643209 /* CozyProductivityTests */,
+				27376E0C7D98A85EF39644D5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		27376E0C7D98A85EF39644D5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				891604A0F2359B3084CAA20B /* CozyProductivity.app */,
+				802D9F6EDD1C59302362A642 /* CozyProductivityTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		DF5EE9A3B93535573485BBDC /* App */ = {
+			isa = PBXGroup;
+			children = (
+				C585688ABE1C92727133D3C0 /* CozyProductivityApp.swift */,
+				BD2FD3CD11A7633D9DD10452 /* RootTabView.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		62431AEDD2C05F2A6BF90B68 /* Theme */ = {
+			isa = PBXGroup;
+			children = (
+				5DC2EE7CE12620407A73130D /* CozyTheme.swift */,
+			);
+			path = Theme;
+			sourceTree = "<group>";
+		};
+		AFE96185D5422EAAF42E0775 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				71D8F6DC185EBC8DC209DBEE /* CozyPreferences.swift */,
+				88789A2A6969715BF6871077 /* RecurrenceRule.swift */,
+				81E6A17A6E17C9AAB1ACD701 /* TaskOccurrence.swift */,
+				A0151A41FEE4B362555999EA /* TaskTemplate.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		3FB860BBDA184B97A5423DEF /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				409F8A940C897CD8E65ED69B /* CalendarFreeTimeService.swift */,
+				D68C7972D3FE8557870E06D8 /* DateHelpers.swift */,
+				20C625C98A69565163F67B5F /* NotificationManager.swift */,
+				831C0EC9886EDE871FD0F2A7 /* SmartScheduler.swift */,
+				01155A19088B92DA2A3C22D1 /* SummaryBuilder.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		904B2A8AED1B4E2E50B38E6E /* Today */ = {
+			isa = PBXGroup;
+			children = (
+				1D47066AFA821A9302F56BE4 /* ConfettiCelebrationOverlay.swift */,
+				6D9F8DB5D10E7ECC045F1D7F /* TaskChecklistCardView.swift */,
+				836F953E4EE44D9040CC54E2 /* TodayChecklistView.swift */,
+			);
+			path = Today;
+			sourceTree = "<group>";
+		};
+		DA3E09A9BD2AF7B06D840721 /* Schedule */ = {
+			isa = PBXGroup;
+			children = (
+				3708F5D55CA6F844891098D2 /* ScheduleOverviewView.swift */,
+				A3D8870D4CDC8C2A786B7D0A /* TaskEditorSheet.swift */,
+			);
+			path = Schedule;
+			sourceTree = "<group>";
+		};
+		1B9FDEECBFB0FBC162AE47C1 /* Reflections */ = {
+			isa = PBXGroup;
+			children = (
+				B3103C927BBDACB4508714F2 /* ReflectionsView.swift */,
+			);
+			path = Reflections;
+			sourceTree = "<group>";
+		};
+		2476E8D683E082E20F1D6752 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				588A77E77423254D06D9439E /* CozySettingsView.swift */,
+				39155883833E15D67C81DA1F /* DayOverrideSheet.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		E773C369DA6C5F40A9A26250 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				904B2A8AED1B4E2E50B38E6E /* Today */,
+				DA3E09A9BD2AF7B06D840721 /* Schedule */,
+				1B9FDEECBFB0FBC162AE47C1 /* Reflections */,
+				2476E8D683E082E20F1D6752 /* Settings */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		4FD83772435AF0A9E8794D7B /* CozyProductivity */ = {
+			isa = PBXGroup;
+			children = (
+				DF5EE9A3B93535573485BBDC /* App */,
+				62431AEDD2C05F2A6BF90B68 /* Theme */,
+				AFE96185D5422EAAF42E0775 /* Models */,
+				3FB860BBDA184B97A5423DEF /* Services */,
+				E773C369DA6C5F40A9A26250 /* Views */,
+				A1ABDED51C2BEC029D9DDFA3 /* Assets.xcassets */,
+			);
+			path = CozyProductivity;
+			sourceTree = "<group>";
+		};
+		8BB2184470F6C030B3643209 /* CozyProductivityTests */ = {
+			isa = PBXGroup;
+			children = (
+				0605FE56F7A80A3BC84CDDD5 /* SmartSchedulerTests.swift */,
+			);
+			path = CozyProductivityTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		01D825FAD1AC3A2805C13AF7 /* CozyProductivity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 553C36434D2A6B733DDF222A /* Build configuration list for PBXNativeTarget "CozyProductivity" */;
+			buildPhases = (
+				1A7CB5D5473FC37F9A7F87A6 /* Sources */,
+				BBF0F45747C283D90E6073CC /* Frameworks */,
+				F9B75DE49BC49FEBF52DEE27 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CozyProductivity;
+			productName = CozyProductivity;
+			productReference = 891604A0F2359B3084CAA20B /* CozyProductivity.app */;
+			productType = "com.apple.product-type.application";
+		};
+		386CB87E3FF977B93AE199B3 /* CozyProductivityTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BD5F5413756289FCB634E7BB /* Build configuration list for PBXNativeTarget "CozyProductivityTests" */;
+			buildPhases = (
+				F0DEE5037D090AF286390544 /* Sources */,
+				C4D8A5C928473F07031C16A5 /* Frameworks */,
+				6E7FD7BAA12CD84E7C6093B9 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				9B54DE8B4EDC38067A9840A3 /* PBXTargetDependency */,
+			);
+			name = CozyProductivityTests;
+			productName = CozyProductivityTests;
+			productReference = 802D9F6EDD1C59302362A642 /* CozyProductivityTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		4E924900C27DBC8880E4937B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					01D825FAD1AC3A2805C13AF7 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					386CB87E3FF977B93AE199B3 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 01D825FAD1AC3A2805C13AF7;
+					};
+				};
+			};
+			buildConfigurationList = 1B9DAA1375A387B9D21031EF /* Build configuration list for PBXProject "CozyProductivity" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 171D6C198AE40ED4A040BB61;
+			productRefGroup = 27376E0C7D98A85EF39644D5 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				01D825FAD1AC3A2805C13AF7 /* CozyProductivity */,
+				386CB87E3FF977B93AE199B3 /* CozyProductivityTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F9B75DE49BC49FEBF52DEE27 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0616325308B7BBE1BEE1C1E6 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6E7FD7BAA12CD84E7C6093B9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1A7CB5D5473FC37F9A7F87A6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B8DEAAC3671624709CD10B15 /* CozyProductivityApp.swift in Sources */,
+				9EAF3E13731EB772F740BF46 /* RootTabView.swift in Sources */,
+				9F325AFFE359739CD9B59AAA /* CozyTheme.swift in Sources */,
+				8C901BC9D758B3613C91F62A /* CozyPreferences.swift in Sources */,
+				3BDF3E833DE9F375133D7FD9 /* RecurrenceRule.swift in Sources */,
+				F073C5429E2C982720463C3F /* TaskOccurrence.swift in Sources */,
+				778FAA52C1A18788CD60CD1A /* TaskTemplate.swift in Sources */,
+				10F2652C569C48CA7A103265 /* CalendarFreeTimeService.swift in Sources */,
+				FFF1E88E496C5802A2D3ECDA /* DateHelpers.swift in Sources */,
+				43AE92E0DA287B6DAA38B5D2 /* NotificationManager.swift in Sources */,
+				2DBFF7850E6E0005C99D970B /* SmartScheduler.swift in Sources */,
+				CD51F3A5D1AED0B5F526C504 /* SummaryBuilder.swift in Sources */,
+				5021CD1D3D2996F6C8930A86 /* ConfettiCelebrationOverlay.swift in Sources */,
+				DE11EC367FA7450AFC51FD34 /* TaskChecklistCardView.swift in Sources */,
+				DA0E266F8597CBCF773DDC1F /* TodayChecklistView.swift in Sources */,
+				EA568478D2D7F1045F1B32C1 /* ScheduleOverviewView.swift in Sources */,
+				6396FC94A77F11C9923C4DD7 /* TaskEditorSheet.swift in Sources */,
+				5313669E48BDF39D8DB7E758 /* ReflectionsView.swift in Sources */,
+				AD9F9A491925F7A0E5CA5581 /* CozySettingsView.swift in Sources */,
+				20647CAC82AD8E55913EC18C /* DayOverrideSheet.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F0DEE5037D090AF286390544 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0BFEDDE43C00C82887432F06 /* SmartSchedulerTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		9B54DE8B4EDC38067A9840A3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 01D825FAD1AC3A2805C13AF7 /* CozyProductivity */;
+			targetProxy = B481E41CC10DD7F2DBD1FCB3 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		ADBF2A7E925260D30804AD46 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = ("DEBUG=1", "$(inherited)");
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		97EA59459CE2CD2C081B49D2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = s;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				ONLY_ACTIVE_ARCH = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		3E21606D2AAC452B6105ED5F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Cozy Tasks";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "CozyProductivity checks busy blocks on your calendar so flexible tasks can be distributed to days with more free time.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "CozyProductivity checks busy blocks on your calendar so flexible tasks can be distributed to days with more free time.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cozyproductivity.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		C4B274D2786A5AFC25B6D908 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Cozy Tasks";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "CozyProductivity checks busy blocks on your calendar so flexible tasks can be distributed to days with more free time.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "CozyProductivity checks busy blocks on your calendar so flexible tasks can be distributed to days with more free time.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cozyproductivity.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		8752D1A14E22D2BC0F764827 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cozyproductivity.appTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CozyProductivity.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CozyProductivity";
+			};
+			name = Debug;
+		};
+		577F3B383DC899889D16F4E0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cozyproductivity.appTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CozyProductivity.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CozyProductivity";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1B9DAA1375A387B9D21031EF /* Build configuration list for PBXProject "CozyProductivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ADBF2A7E925260D30804AD46 /* Debug */,
+				97EA59459CE2CD2C081B49D2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		553C36434D2A6B733DDF222A /* Build configuration list for PBXNativeTarget "CozyProductivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3E21606D2AAC452B6105ED5F /* Debug */,
+				C4B274D2786A5AFC25B6D908 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BD5F5413756289FCB634E7BB /* Build configuration list for PBXNativeTarget "CozyProductivityTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8752D1A14E22D2BC0F764827 /* Debug */,
+				577F3B383DC899889D16F4E0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 4E924900C27DBC8880E4937B /* Project object */;
+}
