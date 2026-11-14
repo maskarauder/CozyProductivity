@@ -19,6 +19,8 @@ final class TaskTemplate {
     /// Optional hard deadline: forces the task to appear on or before `hardDeadlineDate` even if the daily cup lacks hours.
     var hasHardDeadline: Bool = false
     var hardDeadlineDate: Date? = nil
+    var hardDeadlineDayKey: String = ""
+    var hardDeadlineTimezoneID: String = ""
 
     /// Used when recurrence == .customDays (minimum 2).
     var customIntervalDays: Int
@@ -28,6 +30,8 @@ final class TaskTemplate {
 
     /// Optional anchor date (used for pinned dates or flexible once target windows).
     var anchorDate: Date
+    var anchorDayKey: String = ""
+    var anchorTimezoneID: String = ""
 
     /// Optional target window length in days for flexible once tasks (default 7 days).
     var flexibleWindowDays: Int
@@ -54,7 +58,8 @@ final class TaskTemplate {
         anchorDate: Date = Date(),
         flexibleWindowDays: Int = 7,
         isActive: Bool = true,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        calendar: Calendar? = nil
     ) {
         self.id = id
         self.title = title
@@ -65,13 +70,30 @@ final class TaskTemplate {
         self.durationMinutes = max(5, durationMinutes)
         self.weightRaw = weight.rawValue
         self.hasHardDeadline = hasHardDeadline
-        self.hardDeadlineDate = hardDeadlineDate.map { DateHelpers.startOfDay(for: $0) }
         self.customIntervalDays = max(2, customIntervalDays)
         self.isAutoScheduled = recurrence == .daily ? false : isAutoScheduled
-        self.anchorDate = DateHelpers.startOfDay(for: anchorDate)
         self.flexibleWindowDays = max(1, flexibleWindowDays)
         self.isActive = isActive
         self.createdAt = createdAt
+
+        if let calendar {
+            let tzID = calendar.timeZone.identifier
+            let normAnchor = DateHelpers.startOfDay(for: anchorDate, calendar: calendar)
+            let normDeadline = hardDeadlineDate.map { DateHelpers.startOfDay(for: $0, calendar: calendar) }
+            self.anchorDate = normAnchor
+            self.anchorDayKey = DateHelpers.dayKeyString(for: normAnchor, calendar: calendar)
+            self.anchorTimezoneID = tzID
+            self.hardDeadlineDate = normDeadline
+            self.hardDeadlineDayKey = normDeadline.map { DateHelpers.dayKeyString(for: $0, calendar: calendar) } ?? ""
+            self.hardDeadlineTimezoneID = normDeadline != nil ? tzID : ""
+        } else {
+            self.anchorDate = anchorDate
+            self.anchorDayKey = ""
+            self.anchorTimezoneID = ""
+            self.hardDeadlineDate = hardDeadlineDate
+            self.hardDeadlineDayKey = ""
+            self.hardDeadlineTimezoneID = ""
+        }
     }
 
     var category: TaskCategory {
@@ -94,9 +116,70 @@ final class TaskTemplate {
         durationMinutes + weight.extraRankingMinutes
     }
 
+    func normalizedAnchorDate(calendar: Calendar = DateHelpers.calendar) -> Date {
+        let resolved = DateHelpers.resolveCivilDay(
+            dayKey: anchorDayKey,
+            fallbackDate: anchorDate,
+            storedTimezoneID: anchorTimezoneID,
+            calendar: calendar
+        )
+        return resolved.date
+    }
+
+    func setAnchorDate(_ date: Date, calendar: Calendar = DateHelpers.calendar) {
+        let norm = DateHelpers.startOfDay(for: date, calendar: calendar)
+        anchorDate = norm
+        anchorDayKey = DateHelpers.dayKeyString(for: norm, calendar: calendar)
+        anchorTimezoneID = calendar.timeZone.identifier
+    }
+
     func normalizedHardDeadline(calendar: Calendar = DateHelpers.calendar) -> Date? {
         guard hasHardDeadline, let raw = hardDeadlineDate else { return nil }
-        return DateHelpers.startOfDay(for: raw, calendar: calendar)
+        let resolved = DateHelpers.resolveCivilDay(
+            dayKey: hardDeadlineDayKey,
+            fallbackDate: raw,
+            storedTimezoneID: hardDeadlineTimezoneID,
+            calendar: calendar
+        )
+        return resolved.date
+    }
+
+    func setHardDeadline(_ date: Date?, hasDeadline: Bool, calendar: Calendar = DateHelpers.calendar) {
+        hasHardDeadline = hasDeadline
+        if hasDeadline, let date {
+            let norm = DateHelpers.startOfDay(for: date, calendar: calendar)
+            hardDeadlineDate = norm
+            hardDeadlineDayKey = DateHelpers.dayKeyString(for: norm, calendar: calendar)
+            hardDeadlineTimezoneID = calendar.timeZone.identifier
+        } else {
+            hardDeadlineDate = nil
+            hardDeadlineDayKey = ""
+            hardDeadlineTimezoneID = ""
+        }
+    }
+
+    func normalizeCivilDates(in calendar: Calendar = DateHelpers.calendar) {
+        let resolvedAnchor = DateHelpers.resolveCivilDay(
+            dayKey: anchorDayKey,
+            fallbackDate: anchorDate,
+            storedTimezoneID: anchorTimezoneID,
+            calendar: calendar
+        )
+        anchorDate = resolvedAnchor.date
+        anchorDayKey = resolvedAnchor.dayKey
+        anchorTimezoneID = resolvedAnchor.timezoneID
+
+        if hasHardDeadline, let raw = hardDeadlineDate {
+            let resolvedDL = DateHelpers.resolveCivilDay(
+                dayKey: hardDeadlineDayKey,
+                fallbackDate: raw,
+                storedTimezoneID: hardDeadlineTimezoneID,
+                calendar: calendar
+            )
+            hardDeadlineDate = resolvedDL.date
+            hardDeadlineDayKey = resolvedDL.dayKey
+            hardDeadlineTimezoneID = resolvedDL.timezoneID
+        }
     }
 
     var recurrenceDisplayLabel: String {

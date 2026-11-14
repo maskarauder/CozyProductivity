@@ -1,0 +1,57 @@
+name: iOS Build & Test
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Run Unit Tests (iOS Simulator)
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Resolve available iPhone Simulator UDID
+        id: simulator
+        run: |
+          UDID=$(python3 - <<'PY'
+          import json, subprocess, sys
+          raw = subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"], text=True)
+          data = json.loads(raw)
+          candidates = []
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              for dev in devices:
+                  if dev.get("isAvailable") and "iPhone" in dev.get("name", ""):
+                      candidates.append((runtime, dev["name"], dev["udid"]))
+          if not candidates:
+              sys.exit("No available iPhone simulator found")
+          candidates.sort()
+          print(candidates[-1][2])
+          PY
+          )
+          echo "Selected Simulator UDID: $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Build & Test CozyProductivity
+        run: |
+          xcodebuild test \
+            -project CozyProductivity.xcodeproj \
+            -scheme CozyProductivity \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO

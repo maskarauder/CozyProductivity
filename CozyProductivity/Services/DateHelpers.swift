@@ -29,6 +29,15 @@ enum DateHelpers {
         return rawDay
     }
 
+    /// Maps any timestamp (such as `completedAt` or `now`) to its Cozy logical day using the 4:00 AM reset boundary.
+    static func logicalDay(
+        for instant: Date,
+        resetHour: Int = cupResetHour,
+        calendar: Calendar = DateHelpers.calendar
+    ) -> Date {
+        logicalToday(now: instant, resetHour: resetHour, calendar: calendar)
+    }
+
     static func addDays(_ days: Int, to date: Date, calendar: Calendar = DateHelpers.calendar) -> Date {
         let base = startOfDay(for: date, calendar: calendar)
         return calendar.date(byAdding: .day, value: days, to: base) ?? base
@@ -52,8 +61,60 @@ enum DateHelpers {
         return String(format: "%04d-%02d-%02d", y, m, d)
     }
 
-    static func shortMonthDayString(for date: Date) -> String {
+    /// Parses a `"YYYY-MM-DD"` civil day key into a start-of-day `Date` in `calendar`.
+    static func date(fromDayKey dayKey: String, calendar: Calendar = DateHelpers.calendar) -> Date? {
+        let parts = dayKey.split(separator: "-")
+        guard parts.count == 3,
+              let year = Int(parts[0]),
+              let month = Int(parts[1]),
+              let day = Int(parts[2]),
+              (1...12).contains(month),
+              (1...31).contains(day) else {
+            return nil
+        }
+        var comps = DateComponents()
+        comps.year = year
+        comps.month = month
+        comps.day = day
+        guard let built = calendar.date(from: comps) else { return nil }
+        return startOfDay(for: built, calendar: calendar)
+    }
+
+    /// Resolves a stored civil day so traveling across timezones keeps the exact `"YYYY-MM-DD"` calendar day,
+    /// while direct in-place mutations to `fallbackDate` within the same timezone still update the day key.
+    static func resolveCivilDay(
+        dayKey: String,
+        fallbackDate: Date,
+        storedTimezoneID: String,
+        calendar: Calendar = DateHelpers.calendar
+    ) -> (date: Date, dayKey: String, timezoneID: String) {
+        let tzID = calendar.timeZone.identifier
+        let fallbackDay = startOfDay(for: fallbackDate, calendar: calendar)
+        let fallbackKey = dayKeyString(for: fallbackDay, calendar: calendar)
+
+        if !dayKey.isEmpty {
+            if !storedTimezoneID.isEmpty && storedTimezoneID != tzID {
+                if let resolved = date(fromDayKey: dayKey, calendar: calendar) {
+                    return (resolved, dayKey, tzID)
+                }
+            } else if storedTimezoneID.isEmpty {
+                if let resolved = date(fromDayKey: dayKey, calendar: calendar) {
+                    return (resolved, dayKey, tzID)
+                }
+            } else if fallbackKey != dayKey {
+                return (fallbackDay, fallbackKey, tzID)
+            } else if let resolved = date(fromDayKey: dayKey, calendar: calendar) {
+                return (resolved, dayKey, tzID)
+            }
+        }
+
+        return (fallbackDay, fallbackKey, tzID)
+    }
+
+    static func shortMonthDayString(for date: Date, calendar: Calendar = DateHelpers.calendar) -> String {
         let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
         formatter.dateFormat = "MMM d"
         return formatter.string(from: date)
     }
@@ -129,6 +190,7 @@ enum DateHelpers {
         containing date: Date,
         calendar: Calendar = DateHelpers.calendar
     ) -> PeriodWindow {
+        let resolvedAnchor = template.normalizedAnchorDate(calendar: calendar)
         switch template.recurrence {
         case .once:
             let start = startOfDay(for: date, calendar: calendar)
@@ -139,13 +201,13 @@ enum DateHelpers {
         case .weekly:
             return weekWindow(containing: date, calendar: calendar)
         case .biweekly:
-            return biweeklyWindow(containing: date, anchor: template.anchorDate, calendar: calendar)
+            return biweeklyWindow(containing: date, anchor: resolvedAnchor, calendar: calendar)
         case .monthly:
             return monthWindow(containing: date, calendar: calendar)
         case .customDays:
             return customIntervalWindow(
                 containing: date,
-                anchor: template.anchorDate,
+                anchor: resolvedAnchor,
                 intervalDays: template.customIntervalDays,
                 calendar: calendar
             )
@@ -181,20 +243,24 @@ enum DateHelpers {
         }
     }
 
-    static func weekdayName(for weekday: Int) -> String {
+    static func weekdayName(for weekday: Int, calendar: Calendar = DateHelpers.calendar) -> String {
         let symbols = calendar.weekdaySymbols
         guard weekday >= 1 && weekday <= symbols.count else { return "Day" }
         return symbols[weekday - 1]
     }
 
-    static func shortWeekdayName(for date: Date) -> String {
+    static func shortWeekdayName(for date: Date, calendar: Calendar = DateHelpers.calendar) -> String {
         let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
         formatter.dateFormat = "EEE"
         return formatter.string(from: date)
     }
 
-    static func fullHeaderDateString(for date: Date) -> String {
+    static func fullHeaderDateString(for date: Date, calendar: Calendar = DateHelpers.calendar) -> String {
         let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
         formatter.dateFormat = "EEEE, MMMM d"
         return formatter.string(from: date)
     }

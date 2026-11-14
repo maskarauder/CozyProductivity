@@ -713,11 +713,11 @@ final class SmartSchedulerTests: XCTestCase {
             recurrence: .once,
             durationMinutes: 60,
             weight: .heavy,
+            hasHardDeadline: true,
+            hardDeadlineDate: monday,
             isAutoScheduled: true,
             anchorDate: monday,
-            flexibleWindowDays: 7,
-            hasHardDeadline: true,
-            hardDeadlineDate: monday
+            flexibleWindowDays: 7
         )
 
         // 2. Task with Hard Deadline on Wednesday: must appear on or before Wednesday (cannot drift to 240m Saturday!)
@@ -726,11 +726,11 @@ final class SmartSchedulerTests: XCTestCase {
             recurrence: .once,
             durationMinutes: 30,
             weight: .normal,
+            hasHardDeadline: true,
+            hardDeadlineDate: wednesday,
             isAutoScheduled: true,
             anchorDate: monday,
-            flexibleWindowDays: 7,
-            hasHardDeadline: true,
-            hardDeadlineDate: wednesday
+            flexibleWindowDays: 7
         )
 
         // 3. Regular flexible task without deadline: moves off empty Monday to freest day (Saturday)
@@ -1044,7 +1044,9 @@ final class SmartSchedulerTests: XCTestCase {
         XCTAssertEqual(allOccurrences.filter { $0.bonusForDate == monday }.count, 2)
 
         // Completing only base tasks while optional bonus tasks are enabled yields Bronze/Pink (.base), not Gold
-        occToday.markCompleted(at: monday)
+        occToday.markCompleted(at: monday, calendar: testCalendar)
+        XCTAssertTrue(occToday.isCompleted)
+        XCTAssertEqual(occToday.completedAt, monday)
         let withBonusEnabled = StreakAndBonusService.evaluate(
             occurrences: allOccurrences,
             optionalBonusTasksEnabled: true,
@@ -1077,7 +1079,7 @@ final class SmartSchedulerTests: XCTestCase {
 
         // Verify CelebrationController respects confetti, ranks, streaks, and ADD Friendly options
         let controller = CelebrationController()
-        controller.celebratePerfectGold(
+        controller.celebrateGoldPerfect(
             streakDays: 3,
             options: .init(
                 confettiEnabled: false,
@@ -1087,10 +1089,503 @@ final class SmartSchedulerTests: XCTestCase {
                 addFriendlyMode: true
             )
         )
-        XCTAssertTrue(controller.bursts.isEmpty)
+        XCTAssertTrue(controller.particles.isEmpty)
         XCTAssertNotNil(controller.perfectOverlay)
         XCTAssertEqual(controller.perfectOverlay?.showStreak, false)
         XCTAssertNil(controller.bannerMessage)
+    }
+
+    func testFixedDateOnceTaskBeyondHorizonPreservesExactRequestedDate() throws {
+        let nov14 = makeDate(year: 2026, month: 11, day: 14)
+        let dec31 = makeDate(year: 2026, month: 12, day: 31)
+        let jan10 = makeDate(year: 2027, month: 1, day: 10)
+
+        let prefs = CozyPreferences()
+        context.insert(prefs)
+
+        // Pinned (`isAutoScheduled == false`) Once task on Dec 31 must NOT be clamped to Nov 14 + 34d (Dec 18)
+        let newYearsEveTask = TaskTemplate(
+            title: "Prepare New Year's Eve tray",
+            recurrence: .once,
+            durationMinutes: 45,
+            isAutoScheduled: false,
+            anchorDate: dec31,
+            calendar: testCalendar
+        )
+
+        // Flexible (`isAutoScheduled == true`) Once task anchored on Jan 10 (beyond 35-day horizon) defers occurrence creation until in horizon
+        let futureFlexibleTask = TaskTemplate(
+            title: "January closet refresh",
+            recurrence: .once,
+            durationMinutes: 30,
+            isAutoScheduled: true,
+            anchorDate: jan10,
+            flexibleWindowDays: 7,
+            calendar: testCalendar
+        )
+
+        context.insert(newYearsEveTask)
+        context.insert(futureFlexibleTask)
+
+        SmartScheduler.rebalance(
+            context: context,
+            preferences: prefs,
+            referenceDate: nov14,
+            horizonDays: 35,
+            calendar: testCalendar
+        )
+
+        var occs = try context.fetch(FetchDescriptor<TaskOccurrence>())
+        let nyeOcc = try XCTUnwrap(occs.first { $0.template?.id == newYearsEveTask.id })
+        XCTAssertEqual(nyeOcc.scheduledDay(calendar: testCalendar), dec31)
+        XCTAssertNil(occs.first { $0.template?.id == futureFlexibleTask.id })
+
+        // Once time advances to Dec 20 (so Jan 10 is within the 35-day horizon), the deferred flexible task is created >= Jan 10
+        let dec20 = makeDate(year: 2026, month: 12, day: 20)
+        SmartScheduler.rebalance(
+            context: context,
+            preferences: prefs,
+            referenceDate: dec20,
+            horizonDays: 35,
+            calendar: testCalendar
+        )
+
+        occs = try context.fetch(FetchDescriptor<TaskOccurrence>())
+        let janOcc = try XCTUnwrap(occs.first { $0.template?.id == futureFlexibleTask.id })
+        XCTAssertGreaterThanOrEqual(janOcc.scheduledDay(calendar: testCalendar), jan10)
+    }
+
+    func testMissedDailyTaskWithExpiredHardDeadlineDoesNotAccumulate() throws {
+        let monday = makeDate(year: 2026, month: 11, day: 9)
+        let tuesday = makeDate(year: 2026, month: 11, day: 10)
+        let wednesday = makeDate(year: 2026, month: 11, day: 11)
+        let thursday = makeDate(year: 2026, month: 11, day: 12)
+
+        let prefs = CozyPreferences()
+        context.insert(prefs)
+
+        let dailyWithDeadline = TaskTemplate(
+            title: "Evening vitamins",
+            recurrence: .daily,
+            durationMinutes: 10,
+            weight: .light,
+            hasHardDeadline: true,
+            hardDeadlineDate: monday,
+            isAutoScheduled: false,
+            anchorDate: monday,
+            calendar: testCalendar
+        )
+        context.insert(dailyWithDeadline)
+
+        for day in [monday, tuesday, wednesday, thursday] {
+            SmartScheduler.rebalance(
+                context: context,
+                preferences: prefs,
+                referenceDate: day,
+                horizonDays: 7,
+                calendar: testCalendar
+            )
+        }
+
+        let occs = try context.fetch(FetchDescriptor<TaskOccurrence>())
+            .filter { $0.template?.id == dailyWithDeadline.id }
+
+        let pendingOnThursday = occs.filter {
+            $0.status == .pending && $0.scheduledDay(calendar: testCalendar) == thursday
+        }
+        let skippedPastDays = occs.filter {
+            $0.status == .skipped && $0.scheduledDay(calendar: testCalendar) < thursday
+        }
+
+        XCTAssertEqual(pendingOnThursday.count, 1)
+        XCTAssertEqual(skippedPastDays.count, 3)
+    }
+
+    func testEditingOrDeletingTemplatePreservesCompletedTaskHistoryAndQueuesRemoteDeletions() throws {
+        let monday = makeDate(year: 2026, month: 11, day: 9)
+        let tuesday = makeDate(year: 2026, month: 11, day: 10)
+
+        let prefs = CozyPreferences()
+        context.insert(prefs)
+
+        let template = TaskTemplate(
+            title: "Quick kitchen wipe",
+            notes: "Original note",
+            emoji: "🧽",
+            category: .home,
+            recurrence: .daily,
+            durationMinutes: 15,
+            weight: .light,
+            isAutoScheduled: false,
+            anchorDate: monday,
+            calendar: testCalendar
+        )
+        context.insert(template)
+
+        let completedMonday = TaskOccurrence(
+            scheduledDate: monday,
+            periodKey: "daily:2026-11-09",
+            status: .pending,
+            template: template,
+            calendar: testCalendar
+        )
+        let pendingTuesday = TaskOccurrence(
+            scheduledDate: tuesday,
+            periodKey: "daily:2026-11-10",
+            status: .pending,
+            googleCalendarEventId: "c021deadbeef",
+            appleCalendarEventIdentifier: "ek-apple-123",
+            template: template,
+            calendar: testCalendar
+        )
+        pendingTuesday.googleSyncedDestination = "google-oauth|alice@example.com|primary"
+        context.insert(completedMonday)
+        context.insert(pendingTuesday)
+
+        // Complete Monday's occurrence while it is 15m Light
+        completedMonday.markCompleted(at: monday.addingTimeInterval(18 * 3600), calendar: testCalendar)
+
+        // Later edit the template to 90m Heavy with a new title, emoji, notes, category, and recurrence
+        template.title = "Full kitchen deep clean"
+        template.emoji = "🫧"
+        template.notes = "Updated heavy checklist"
+        template.category = .errands
+        template.recurrence = .weekly
+        template.durationMinutes = 90
+        template.weight = .heavy
+        pendingTuesday.refreshPendingSnapshotsFromTemplate(periodDeadline: nil, calendar: testCalendar)
+
+        // Pending occurrence reflects updated template, while completed occurrence preserves frozen 15m Light history!
+        XCTAssertEqual(pendingTuesday.displayTitle, "Full kitchen deep clean")
+        XCTAssertEqual(pendingTuesday.displayDurationMinutes, 90)
+        XCTAssertEqual(pendingTuesday.displayWeight, .heavy)
+
+        XCTAssertEqual(completedMonday.displayTitle, "Quick kitchen wipe")
+        XCTAssertEqual(completedMonday.displayEmoji, "🧽")
+        XCTAssertEqual(completedMonday.displayNotes, "Original note")
+        XCTAssertEqual(completedMonday.displayCategory, .home)
+        XCTAssertEqual(completedMonday.displayRecurrenceKind, .daily)
+        XCTAssertEqual(completedMonday.recurrenceLabel, "Daily")
+        XCTAssertEqual(completedMonday.displayDurationMinutes, 15)
+        XCTAssertEqual(completedMonday.displayWeight, .light)
+        XCTAssertEqual(completedMonday.effectiveLoadMinutes, 15)
+
+        // Now delete the template and pending occurrence (preserving completed history & queueing remote calendar deletions)
+        prefs.enqueuePendingDeletions(for: pendingTuesday)
+        context.delete(pendingTuesday)
+        completedMonday.freezeSnapshotsFromCurrentState(calendar: testCalendar)
+        context.delete(template)
+        try context.save()
+
+        XCTAssertEqual(completedMonday.displayTitle, "Quick kitchen wipe")
+        XCTAssertEqual(completedMonday.displayDurationMinutes, 15)
+        XCTAssertEqual(completedMonday.displayWeight, .light)
+
+        let digest = SummaryBuilder.dailyDigest(for: monday, occurrences: [completedMonday], calendar: testCalendar)
+        XCTAssertEqual(digest.completedCount, 1)
+        XCTAssertEqual(digest.totalCompletedMinutes, 15)
+
+        XCTAssertEqual(prefs.pendingGoogleDeletions.count, 1)
+        XCTAssertEqual(prefs.pendingGoogleDeletions.first?.accountKey, "alice@example.com")
+        XCTAssertEqual(prefs.pendingGoogleDeletions.first?.calendarID, "primary")
+        XCTAssertEqual(prefs.pendingGoogleDeletions.first?.eventID, "c021deadbeef")
+        XCTAssertEqual(prefs.pendingEKDeletions.count, 1)
+        XCTAssertEqual(prefs.pendingEKDeletions.first?.eventIdentifier, "ek-apple-123")
+    }
+
+    func testTimezoneShiftPreservesCivilScheduledDateAndSummaryUses4AMLogicalDay() throws {
+        var tokyoCal = Calendar(identifier: .gregorian)
+        tokyoCal.timeZone = TimeZone(identifier: "Asia/Tokyo")! // GMT+9
+        tokyoCal.firstWeekday = 2
+
+        var laCal = Calendar(identifier: .gregorian)
+        laCal.timeZone = TimeZone(identifier: "America/Los_Angeles")! // GMT-8
+        laCal.firstWeekday = 2
+
+        var tokyoComps = DateComponents()
+        tokyoComps.year = 2026
+        tokyoComps.month = 11
+        tokyoComps.day = 20
+        let nov20Tokyo = tokyoCal.date(from: tokyoComps)!
+
+        let prefs = CozyPreferences()
+        context.insert(prefs)
+
+        // User schedules a pinned task for Nov 20 while in Tokyo (2026-11-20 00:00 JST == 2026-11-19 07:00 PST)
+        let tripTask = TaskTemplate(
+            title: "Call hotel front desk",
+            recurrence: .once,
+            durationMinutes: 20,
+            isAutoScheduled: false,
+            anchorDate: nov20Tokyo,
+            calendar: tokyoCal
+        )
+        context.insert(tripTask)
+
+        SmartScheduler.rebalance(
+            context: context,
+            preferences: prefs,
+            referenceDate: nov20Tokyo,
+            horizonDays: 7,
+            calendar: tokyoCal
+        )
+
+        let occ = try XCTUnwrap(context.fetch(FetchDescriptor<TaskOccurrence>()).first)
+        XCTAssertEqual(occ.scheduledDayKey, "2026-11-20")
+
+        // User flies to Los Angeles (GMT-8) on Nov 19 local date; civil date "2026-11-20" must stay Nov 20 in LA!
+        var laNov19Comps = DateComponents()
+        laNov19Comps.year = 2026
+        laNov19Comps.month = 11
+        laNov19Comps.day = 19
+        let nov19LA = laCal.date(from: laNov19Comps)!
+        var laNov20Comps = DateComponents()
+        laNov20Comps.year = 2026
+        laNov20Comps.month = 11
+        laNov20Comps.day = 20
+        let nov20LA = laCal.date(from: laNov20Comps)!
+
+        SmartScheduler.rebalance(
+            context: context,
+            preferences: prefs,
+            referenceDate: nov19LA,
+            horizonDays: 7,
+            calendar: laCal
+        )
+
+        XCTAssertEqual(occ.scheduledDay(calendar: laCal), nov20LA)
+        XCTAssertEqual(DateHelpers.dayKeyString(for: occ.scheduledDay(calendar: laCal), calendar: laCal), "2026-11-20")
+
+        // Verify 01:30 AM completion on Nov 15 attributes to Nov 14's 4:00 AM Cozy logical day in SummaryBuilder
+        let nov14 = makeDate(year: 2026, month: 11, day: 14)
+        let nov15 = makeDate(year: 2026, month: 11, day: 15)
+        let nov15At130AM = nov15.addingTimeInterval(1.5 * 3600)
+
+        let lateNightTemplate = TaskTemplate(
+            title: "Herbal tea & journal",
+            recurrence: .once,
+            durationMinutes: 20,
+            isAutoScheduled: false,
+            anchorDate: nov14,
+            calendar: testCalendar
+        )
+        context.insert(lateNightTemplate)
+        let lateNightOcc = TaskOccurrence(
+            scheduledDate: nov14,
+            periodKey: "once:late",
+            status: .pending,
+            template: lateNightTemplate,
+            calendar: testCalendar
+        )
+        context.insert(lateNightOcc)
+        lateNightOcc.markCompleted(at: nov15At130AM, calendar: testCalendar)
+
+        let nov14Digest = SummaryBuilder.dailyDigest(for: nov14, occurrences: [lateNightOcc], calendar: testCalendar)
+        let nov15Digest = SummaryBuilder.dailyDigest(for: nov15, occurrences: [lateNightOcc], calendar: testCalendar)
+        XCTAssertEqual(nov14Digest.completedCount, 1)
+        XCTAssertEqual(nov15Digest.completedCount, 0)
+    }
+
+    func testGooglePaginationDuplicateReconciliationDestinationSignatureAndChannelIsolation() throws {
+        let activeOccID = UUID()
+        let orphanOccID = UUID()
+
+        // 1. Multi-page Google Calendar v3 event list decoding
+        let page1 = """
+        {
+          "nextPageToken": "tok_page_2",
+          "items": [
+            {
+              "id": "c021dup1",
+              "status": "confirmed",
+              "summary": "🌸 Wash sheets",
+              "extendedProperties": {
+                "private": {
+                  "cozyApp": "CozyProductivity",
+                  "cozyChannel": "google-oauth",
+                  "cozyTaskOccurrenceId": "\(activeOccID.uuidString)"
+                }
+              }
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let page2 = """
+        {
+          "items": [
+            {
+              "id": "c021dup2",
+              "status": "confirmed",
+              "summary": "🌸 Wash sheets",
+              "extendedProperties": {
+                "private": {
+                  "cozyApp": "CozyProductivity",
+                  "cozyChannel": "google-oauth",
+                  "cozyTaskOccurrenceId": "\(activeOccID.uuidString)"
+                }
+              }
+            },
+            {
+              "id": "c021orphan",
+              "status": "confirmed",
+              "summary": "🌸 Old deleted task",
+              "extendedProperties": {
+                "private": {
+                  "cozyApp": "CozyProductivity",
+                  "cozyChannel": "google-oauth",
+                  "cozyTaskOccurrenceId": "\(orphanOccID.uuidString)"
+                }
+              }
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let allItems = try GoogleCalendarService.decodePaginatedEventPages([page1, page2])
+        XCTAssertEqual(allItems.count, 3)
+
+        // 2. Duplicate & orphan reconciliation keeps canonical preferred ID and deletes both duplicate & orphan
+        let managed = GoogleCalendarService.extractCozyManagedEvents(fromItems: allItems)
+        let reconciled = GoogleCalendarService.reconcileRemoteManagedEvents(
+            managedEvents: managed,
+            activeOccurrenceIDs: [activeOccID],
+            preferredEventIDByOccurrence: [activeOccID: "c021dup2"]
+        )
+        XCTAssertEqual(reconciled.canonicalEventIDByOccurrence[activeOccID], "c021dup2")
+        XCTAssertEqual(Set(reconciled.eventIDsToDelete), Set(["c021dup1", "c021orphan"]))
+
+        // 3. Deterministic ID uses strictly valid RFC 2938 base32hex chars (`[0-9a-v]`) and changes across destinations
+        let destA = GoogleCalendarService.makeGoogleDestinationKey(accountKey: "user1@gmail.com", calendarID: "primary")
+        let destB = GoogleCalendarService.makeGoogleDestinationKey(accountKey: "user2@gmail.com", calendarID: "primary")
+        let destC = GoogleCalendarService.makeGoogleDestinationKey(accountKey: "user1@gmail.com", calendarID: "work_cal")
+
+        let detID = GoogleCalendarService.deterministicGoogleEventID(occurrenceID: activeOccID, destinationKey: destA)
+        let allowedBase32Hex = CharacterSet(charactersIn: "0123456789abcdefghijklmnopqrstuv")
+        XCTAssertTrue(detID.unicodeScalars.allSatisfy { allowedBase32Hex.contains($0) })
+        XCTAssertGreaterThanOrEqual(detID.count, 5)
+        XCTAssertNotEqual(
+            GoogleCalendarService.deterministicGoogleEventID(occurrenceID: activeOccID, destinationKey: destA),
+            GoogleCalendarService.deterministicGoogleEventID(occurrenceID: activeOccID, destinationKey: destB)
+        )
+
+        let now = makeDate(year: 2026, month: 11, day: 14)
+        let samplePayload = GoogleCalendarService.buildEventPayload(
+            occurrenceID: activeOccID,
+            title: "Water plants",
+            emoji: "🪴",
+            notes: "",
+            recurrenceLabel: "Once",
+            isCompleted: false,
+            isBonus: false,
+            start: now.addingTimeInterval(18 * 3600),
+            end: now.addingTimeInterval(18.5 * 3600),
+            timeZoneIdentifier: "UTC"
+        )
+        let sigA = GoogleCalendarService.buildGoogleSyncSignature(destinationKey: destA, payload: samplePayload)
+        let sigB = GoogleCalendarService.buildGoogleSyncSignature(destinationKey: destB, payload: samplePayload)
+        let sigC = GoogleCalendarService.buildGoogleSyncSignature(destinationKey: destC, payload: samplePayload)
+        XCTAssertNotEqual(sigA, sigB)
+        XCTAssertNotEqual(sigA, sigC)
+
+        // 4. HTTP DELETE confirmation status validation
+        XCTAssertTrue(GoogleCalendarService.isConfirmedDeleteStatus(204))
+        XCTAssertTrue(GoogleCalendarService.isConfirmedDeleteStatus(404))
+        XCTAssertTrue(GoogleCalendarService.isConfirmedDeleteStatus(410))
+        XCTAssertFalse(GoogleCalendarService.isConfirmedDeleteStatus(500))
+        XCTAssertFalse(GoogleCalendarService.isConfirmedDeleteStatus(403))
+
+        // 5. Channel isolation prevents Apple/EventKit sync from deleting OAuth-managed Google events on bridged calendars
+        let googleOAuthTag = CalendarFreeTimeService.formatCozyMetadataTag(channel: .googleOAuth, occurrenceID: activeOccID)
+        XCTAssertTrue(CalendarFreeTimeService.metadataBelongsToChannel(url: nil, notes: googleOAuthTag, targetChannel: .googleOAuth))
+        XCTAssertFalse(CalendarFreeTimeService.metadataBelongsToChannel(url: nil, notes: googleOAuthTag, targetChannel: .apple))
+        XCTAssertFalse(CalendarFreeTimeService.metadataBelongsToChannel(url: nil, notes: googleOAuthTag, targetChannel: .googleBridge))
+    }
+
+    func testConfettiStaggeredParticlesPruneCompletelyAndHistoricalStreakArchiveMatchesFullScan() throws {
+        // 1. Staggered Gold confetti particles prune completely to 0 after `latestParticleExpiry`
+        let controller = CelebrationController()
+        controller.celebrateGoldPerfect(streakDays: 5)
+        XCTAssertEqual(controller.particles.count, 240)
+        let finalExpiry = try XCTUnwrap(controller.latestParticleExpiry)
+
+        // Pruning after the last staggered particle expires leaves `particles` empty so TimelineView(.animation) unmounts
+        controller.pruneExpiredParticles(at: finalExpiry + 0.001)
+        XCTAssertTrue(controller.particles.isEmpty)
+        XCTAssertNil(controller.latestParticleExpiry)
+
+        // 2. Incremental historical streak archive + operational window matches full-history scan
+        let startDay = makeDate(year: 2026, month: 8, day: 1)
+        let today = DateHelpers.addDays(95, to: startDay, calendar: testCalendar) // Nov 4, 2026
+        let prefs = CozyPreferences(optionalBonusTasksEnabled: false)
+        context.insert(prefs)
+
+        let dailyHabit = TaskTemplate(
+            title: "Morning tea",
+            recurrence: .daily,
+            durationMinutes: 10,
+            isAutoScheduled: false,
+            anchorDate: startDay,
+            calendar: testCalendar
+        )
+        context.insert(dailyHabit)
+
+        var allOccurrences: [TaskOccurrence] = []
+        for offset in 0...95 {
+            let d = DateHelpers.addDays(offset, to: startDay, calendar: testCalendar)
+            let completed = (offset != 20) // Missed day 20 -> 75 consecutive Gold days from offset 21...95!
+            let occ = TaskOccurrence(
+                scheduledDate: d,
+                periodKey: "daily:\(DateHelpers.dayKeyString(for: d, calendar: testCalendar))",
+                status: completed ? .completed : .pending,
+                completedAt: completed ? d.addingTimeInterval(9 * 3600) : nil,
+                template: dailyHabit,
+                calendar: testCalendar
+            )
+            if !completed && d < today {
+                occ.status = .skipped
+                // Wait: skipped occurrences are excluded; leave an uncompleted non-skipped past task on offset 20 to break streak!
+            }
+            context.insert(occ)
+            allOccurrences.append(occ)
+        }
+        // Make offset 20 an uncompleted past day (not completed, status pending in past archive) to verify streak reset + 75-day rebuild
+        allOccurrences[20].statusRaw = OccurrenceStatus.pending.rawValue
+
+        let fullSnapshot = StreakAndBonusService.evaluate(
+            occurrences: allOccurrences,
+            optionalBonusTasksEnabled: false,
+            historicalArchive: nil,
+            today: today,
+            calendar: testCalendar
+        )
+
+        let archiveCutoff = DateHelpers.addDays(-SmartScheduler.streakArchiveCutoffDays, to: today, calendar: testCalendar)
+        StreakAndBonusService.refreshHistoricalArchiveIfNeeded(
+            context: context,
+            preferences: prefs,
+            operationalCutoff: archiveCutoff,
+            today: today,
+            calendar: testCalendar
+        )
+        XCTAssertNotNil(prefs.historicalStreakArchive)
+
+        let operationalSlice = allOccurrences.filter { $0.scheduledDay(calendar: testCalendar) >= archiveCutoff }
+        XCTAssertLessThan(operationalSlice.count, allOccurrences.count)
+
+        let archivedSnapshot = StreakAndBonusService.evaluate(
+            occurrences: operationalSlice,
+            persistedLongestStreak: prefs.longestRecordedStreak,
+            optionalBonusTasksEnabled: false,
+            historicalArchive: prefs.historicalStreakArchive,
+            today: today,
+            calendar: testCalendar
+        )
+
+        XCTAssertEqual(archivedSnapshot.currentStreak, fullSnapshot.currentStreak)
+        XCTAssertEqual(archivedSnapshot.currentStreak, 75)
+        XCTAssertEqual(archivedSnapshot.longestStreak, fullSnapshot.longestStreak)
+        XCTAssertEqual(archivedSnapshot.totalGoldDays, fullSnapshot.totalGoldDays)
     }
 
     private func makeDate(year: Int, month: Int, day: Int) -> Date {

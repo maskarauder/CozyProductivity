@@ -14,7 +14,7 @@ struct TaskChecklistCardView: View {
     @State private var checkScale: CGFloat = 1.0
 
     private var recurrence: RecurrenceKind {
-        occurrence.template?.recurrence ?? .once
+        occurrence.displayRecurrenceKind
     }
 
     private var weight: TaskWeight {
@@ -175,7 +175,7 @@ struct TaskChecklistCardView: View {
                     Spacer(minLength: 0)
                 }
 
-                if !addFriendlyMode && (hardDeadline != nil || occurrence.template?.category != nil) {
+                if !addFriendlyMode && (hardDeadline != nil || occurrence.displayCategory != nil) {
                     HStack(spacing: 8) {
                         if let deadline = hardDeadline {
                             let isUrgent = deadline <= today
@@ -198,7 +198,7 @@ struct TaskChecklistCardView: View {
                             )
                         }
 
-                        if let category = occurrence.template?.category {
+                        if let category = occurrence.displayCategory {
                             Text(category.title)
                                 .font(.caption2.weight(.medium))
                                 .foregroundStyle(CozyTheme.inkSecondary)
@@ -228,10 +228,12 @@ struct TaskChecklistCardView: View {
                     Label("Task Weight (\(weight.title))", systemImage: "scalemass")
                 }
 
-                Button {
-                    onEditTemplate()
-                } label: {
-                    Label("Edit Task", systemImage: "pencil")
+                if occurrence.template != nil {
+                    Button {
+                        onEditTemplate()
+                    } label: {
+                        Label("Edit Task", systemImage: "pencil")
+                    }
                 }
 
                 if !occurrence.isCompleted {
@@ -250,12 +252,14 @@ struct TaskChecklistCardView: View {
                     }
                 }
 
-                Divider()
+                if occurrence.template != nil {
+                    Divider()
 
-                Button(role: .destructive) {
-                    onDeleteTemplate()
-                } label: {
-                    Label("Delete Task", systemImage: "trash")
+                    Button(role: .destructive) {
+                        onDeleteTemplate()
+                    } label: {
+                        Label("Delete Task", systemImage: "trash")
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis")

@@ -17,6 +17,7 @@ struct MonthCalendarView: View {
     @State private var selectedDate: Date = DateHelpers.logicalToday()
     @State private var showingMonthYearPicker = false
     @State private var pickerYear: Int = DateHelpers.calendar.component(.year, from: DateHelpers.logicalToday())
+    @State private var historicalMonthOccurrences: [TaskOccurrence] = []
 
     private var today: Date {
         DateHelpers.logicalToday()
@@ -24,16 +25,6 @@ struct MonthCalendarView: View {
 
     private var calendar: Calendar {
         DateHelpers.calendar
-    }
-
-    private var streakSnapshot: StreakSnapshot {
-        StreakAndBonusService.evaluate(
-            occurrences: occurrences,
-            persistedLongestStreak: preferences.longestRecordedStreak,
-            optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled,
-            today: today,
-            calendar: calendar
-        )
     }
 
     private var baseStyle: BaseHighlightColorStyle {
@@ -50,19 +41,61 @@ struct MonthCalendarView: View {
         return c1.year == c2.year && c1.month == c2.month
     }
 
+    private var isDisplayingArchivedMonth: Bool {
+        let cutoff = DateHelpers.addDays(-SmartScheduler.streakArchiveCutoffDays, to: today, calendar: calendar)
+        return monthStart(for: displayedMonthStart) < cutoff
+    }
+
+    private func mergedOccurrencesForDisplayedMonth() -> [TaskOccurrence] {
+        guard !historicalMonthOccurrences.isEmpty else { return occurrences }
+        var seen = Set<UUID>()
+        var combined: [TaskOccurrence] = []
+        combined.reserveCapacity(occurrences.count + historicalMonthOccurrences.count)
+        for occ in occurrences where seen.insert(occ.id).inserted {
+            combined.append(occ)
+        }
+        for occ in historicalMonthOccurrences where seen.insert(occ.id).inserted {
+            combined.append(occ)
+        }
+        return combined
+    }
+
     var body: some View {
-        NavigationStack {
+        let activeStreakSnapshot = StreakAndBonusService.evaluate(
+            occurrences: occurrences,
+            persistedLongestStreak: preferences.longestRecordedStreak,
+            optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled,
+            historicalArchive: preferences.historicalStreakArchive,
+            today: today,
+            calendar: calendar
+        )
+        let monthOccurrences = mergedOccurrencesForDisplayedMonth()
+        let displayedMonthSnapshot: StreakSnapshot = isDisplayingArchivedMonth
+            ? StreakAndBonusService.evaluate(
+                occurrences: monthOccurrences,
+                persistedLongestStreak: preferences.longestRecordedStreak,
+                optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled,
+                historicalArchive: nil,
+                today: today,
+                calendar: calendar
+            )
+            : activeStreakSnapshot
+
+        return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: isADDFriendly ? 14 : 18) {
                     headerSection
 
                     if preferences.streaksEnabled {
-                        streakStatsCard
+                        streakStatsCard(snapshot: activeStreakSnapshot)
                     }
 
-                    monthCalendarCard
+                    monthCalendarCard(snapshot: displayedMonthSnapshot)
 
-                    selectedDayInspectorCard
+                    selectedDayInspectorCard(
+                        snapshot: displayedMonthSnapshot,
+                        monthOccurrences: monthOccurrences
+                    )
                 }
                 .padding(.horizontal, 18)
                 .padding(.top, 10)
@@ -72,6 +105,9 @@ struct MonthCalendarView: View {
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showingMonthYearPicker) {
                 monthYearPickerSheet
+            }
+            .task(id: displayedMonthStart) {
+                loadHistoricalMonthIfNeeded()
             }
         }
     }
@@ -113,22 +149,22 @@ struct MonthCalendarView: View {
 
     // MARK: - Current Streak & Longest Recorded Streak Card
 
-    private var streakStatsCard: some View {
+    private func streakStatsCard(snapshot: StreakSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 streakMetricBox(
                     icon: "flame.fill",
                     iconColor: CozyTheme.goldBorder,
-                    value: "\(streakSnapshot.currentStreak)",
-                    unit: streakSnapshot.currentStreak == 1 ? "day" : "days",
+                    value: "\(snapshot.currentStreak)",
+                    unit: snapshot.currentStreak == 1 ? "day" : "days",
                     title: isADDFriendly ? "Current" : "Current Streak"
                 )
 
                 streakMetricBox(
                     icon: "crown.fill",
                     iconColor: CozyTheme.deepRose,
-                    value: "\(streakSnapshot.longestStreak)",
-                    unit: streakSnapshot.longestStreak == 1 ? "day" : "days",
+                    value: "\(snapshot.longestStreak)",
+                    unit: snapshot.longestStreak == 1 ? "day" : "days",
                     title: isADDFriendly ? "Best" : "Longest Streak"
                 )
             }
@@ -198,9 +234,9 @@ struct MonthCalendarView: View {
 
     // MARK: - Month Grid Card
 
-    private var monthCalendarCard: some View {
+    private func monthCalendarCard(snapshot: StreakSnapshot) -> some View {
         let gridCells = buildMonthGridCells()
-        let monthStats = monthlyMedalCounts(for: gridCells.compactMap { $0 })
+        let monthStats = monthlyMedalCounts(for: gridCells.compactMap { $0 }, snapshot: snapshot)
         let showRanks = preferences.dayRanksEnabled
 
         return VStack(alignment: .leading, spacing: 14) {
@@ -266,7 +302,7 @@ struct MonthCalendarView: View {
                 // Day Cells
                 ForEach(Array(gridCells.enumerated()), id: \.offset) { _, maybeDate in
                     if let cellDate = maybeDate {
-                        dayCell(for: cellDate)
+                        dayCell(for: cellDate, snapshot: snapshot)
                     } else {
                         Color.clear
                             .frame(height: 44)
@@ -343,9 +379,9 @@ struct MonthCalendarView: View {
         .cozyCard()
     }
 
-    private func dayCell(for date: Date) -> some View {
+    private func dayCell(for date: Date, snapshot: StreakSnapshot) -> some View {
         let dayNumber = calendar.component(.day, from: date)
-        let summary = streakSnapshot.summary(for: date)
+        let summary = snapshot.summary(for: date, calendar: calendar)
         let tier = summary.tier
         let showRanks = preferences.dayRanksEnabled
         let isToday = DateHelpers.isSameDay(date, today, calendar: calendar)
@@ -445,26 +481,29 @@ struct MonthCalendarView: View {
 
     // MARK: - Selected Day Inspector
 
-    private var selectedDayInspectorCard: some View {
-        let summary = streakSnapshot.summary(for: selectedDate)
+    private func selectedDayInspectorCard(
+        snapshot: StreakSnapshot,
+        monthOccurrences: [TaskOccurrence]
+    ) -> some View {
+        let summary = snapshot.summary(for: selectedDate, calendar: calendar)
         let tier = summary.tier
         let showRanks = preferences.dayRanksEnabled
         let isFuture = selectedDate > today
         let isSelectedToday = DateHelpers.isSameDay(selectedDate, today, calendar: calendar)
 
-        let baseItems = occurrences
+        let baseItems = monthOccurrences
             .filter {
                 $0.status != .skipped
-                    && $0.bonusForDate == nil
-                    && DateHelpers.isSameDay($0.scheduledDate, selectedDate, calendar: calendar)
+                    && $0.bonusDay(calendar: calendar) == nil
+                    && DateHelpers.isSameDay($0.scheduledDay(calendar: calendar), selectedDate, calendar: calendar)
             }
             .sorted { $0.displayTitle < $1.displayTitle }
 
         let bonusItems = preferences.optionalBonusTasksEnabled
-            ? occurrences
+            ? monthOccurrences
                 .filter {
                     $0.status != .skipped
-                        && ($0.bonusForDate.map { DateHelpers.isSameDay($0, selectedDate, calendar: calendar) } ?? false)
+                        && ($0.bonusDay(calendar: calendar).map { DateHelpers.isSameDay($0, selectedDate, calendar: calendar) } ?? false)
                         && ($0.isCompleted || isSelectedToday)
                 }
                 .sorted { $0.bonusSlot < $1.bonusSlot }
@@ -472,6 +511,8 @@ struct MonthCalendarView: View {
 
         let dateFormatter: DateFormatter = {
             let fmt = DateFormatter()
+            fmt.calendar = calendar
+            fmt.timeZone = calendar.timeZone
             fmt.dateFormat = isADDFriendly ? "MMM d, yyyy" : "EEEE, MMM d, yyyy"
             return fmt
         }()
@@ -752,6 +793,8 @@ struct MonthCalendarView: View {
 
     private func monthYearTitle(for date: Date) -> String {
         let fmt = DateFormatter()
+        fmt.calendar = calendar
+        fmt.timeZone = calendar.timeZone
         fmt.dateFormat = "MMMM yyyy"
         return fmt.string(from: date)
     }
@@ -777,10 +820,13 @@ struct MonthCalendarView: View {
         return cells
     }
 
-    private func monthlyMedalCounts(for dates: [Date]) -> (base: Int, silver: Int, gold: Int) {
+    private func monthlyMedalCounts(
+        for dates: [Date],
+        snapshot: StreakSnapshot
+    ) -> (base: Int, silver: Int, gold: Int) {
         var b = 0, s = 0, g = 0
         for d in dates where d <= today {
-            switch streakSnapshot.tier(for: d, calendar: calendar) {
+            switch snapshot.tier(for: d, calendar: calendar) {
             case .none: break
             case .base: b += 1
             case .silver: s += 1
@@ -788,5 +834,29 @@ struct MonthCalendarView: View {
             }
         }
         return (b, s, g)
+    }
+
+    private func loadHistoricalMonthIfNeeded() {
+        guard isDisplayingArchivedMonth else {
+            if !historicalMonthOccurrences.isEmpty {
+                historicalMonthOccurrences = []
+            }
+            return
+        }
+
+        let start = monthStart(for: displayedMonthStart)
+        let daysInMonth = calendar.range(of: .day, in: .month, for: start)?.count ?? 31
+        let monthEnd = DateHelpers.addDays(daysInMonth - 1, to: start, calendar: calendar)
+        // Include [-3d ... +9d] margin for timezone offsets and 7-day optional bonus lookahead
+        let queryLower = DateHelpers.addDays(-3, to: start, calendar: calendar)
+        let queryUpper = DateHelpers.addDays(9, to: monthEnd, calendar: calendar)
+
+        let descriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.scheduledDate >= queryLower && occ.scheduledDate <= queryUpper
+            },
+            sortBy: [SortDescriptor(\TaskOccurrence.scheduledDate, order: .forward)]
+        )
+        historicalMonthOccurrences = (try? modelContext.fetch(descriptor)) ?? []
     }
 }

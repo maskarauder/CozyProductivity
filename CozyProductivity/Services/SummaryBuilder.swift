@@ -78,12 +78,11 @@ enum SummaryBuilder {
 
         let completed = occurrences.filter { occ in
             guard occ.isCompleted else { return false }
-            let effectiveDate = DateHelpers.startOfDay(for: occ.completedAt ?? occ.scheduledDate, calendar: calendar)
-            return effectiveDate == targetDay
+            return occ.completedLogicalDay(calendar: calendar) == targetDay
         }
 
         let pendingToday = occurrences.filter { occ in
-            occ.status == .pending && DateHelpers.isSameDay(occ.scheduledDate, targetDay, calendar: calendar)
+            occ.status == .pending && DateHelpers.isSameDay(occ.scheduledDay(calendar: calendar), targetDay, calendar: calendar)
         }
 
         let snapshots = completed
@@ -94,12 +93,14 @@ enum SummaryBuilder {
                     title: $0.displayTitle,
                     emoji: $0.displayEmoji,
                     durationMinutes: $0.displayDurationMinutes,
-                    completedDate: $0.completedAt ?? $0.scheduledDate
+                    completedDate: $0.completedAt ?? $0.scheduledDay(calendar: calendar)
                 )
             }
 
         let totalMinutes = snapshots.reduce(0) { $0 + $1.durationMinutes }
         let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
         formatter.dateFormat = "EEEE, MMM d"
 
         return AccomplishmentDigest(
@@ -122,13 +123,13 @@ enum SummaryBuilder {
 
         let completed = occurrences.filter { occ in
             guard occ.isCompleted else { return false }
-            let day = DateHelpers.startOfDay(for: occ.completedAt ?? occ.scheduledDate, calendar: calendar)
+            let day = occ.completedLogicalDay(calendar: calendar)
             return day >= window.start && day <= window.end
         }
 
         let pending = occurrences.filter { occ in
             guard occ.status == .pending else { return false }
-            let day = DateHelpers.startOfDay(for: occ.scheduledDate, calendar: calendar)
+            let day = occ.scheduledDay(calendar: calendar)
             return day >= window.start && day <= window.end
         }
 
@@ -140,14 +141,16 @@ enum SummaryBuilder {
                     title: $0.displayTitle,
                     emoji: $0.displayEmoji,
                     durationMinutes: $0.displayDurationMinutes,
-                    completedDate: $0.completedAt ?? $0.scheduledDate
+                    completedDate: $0.completedAt ?? $0.scheduledDay(calendar: calendar)
                 )
             }
 
-        let uniqueDays = Set(snapshots.map { DateHelpers.startOfDay(for: $0.completedDate, calendar: calendar) })
+        let uniqueDays = Set(completed.map { $0.completedLogicalDay(calendar: calendar) })
         let totalMinutes = snapshots.reduce(0) { $0 + $1.durationMinutes }
 
         let fmt = DateFormatter()
+        fmt.calendar = calendar
+        fmt.timeZone = calendar.timeZone
         fmt.dateFormat = "MMM d"
         let label = "\(fmt.string(from: window.start)) – \(fmt.string(from: window.end))"
 
@@ -171,13 +174,13 @@ enum SummaryBuilder {
 
         let completed = occurrences.filter { occ in
             guard occ.isCompleted else { return false }
-            let day = DateHelpers.startOfDay(for: occ.completedAt ?? occ.scheduledDate, calendar: calendar)
+            let day = occ.completedLogicalDay(calendar: calendar)
             return day >= window.start && day <= window.end
         }
 
         let pending = occurrences.filter { occ in
             guard occ.status == .pending else { return false }
-            let day = DateHelpers.startOfDay(for: occ.scheduledDate, calendar: calendar)
+            let day = occ.scheduledDay(calendar: calendar)
             return day >= window.start && day <= window.end
         }
 
@@ -189,14 +192,16 @@ enum SummaryBuilder {
                     title: $0.displayTitle,
                     emoji: $0.displayEmoji,
                     durationMinutes: $0.displayDurationMinutes,
-                    completedDate: $0.completedAt ?? $0.scheduledDate
+                    completedDate: $0.completedAt ?? $0.scheduledDay(calendar: calendar)
                 )
             }
 
-        let uniqueDays = Set(snapshots.map { DateHelpers.startOfDay(for: $0.completedDate, calendar: calendar) })
+        let uniqueDays = Set(completed.map { $0.completedLogicalDay(calendar: calendar) })
         let totalMinutes = snapshots.reduce(0) { $0 + $1.durationMinutes }
 
         let fmt = DateFormatter()
+        fmt.calendar = calendar
+        fmt.timeZone = calendar.timeZone
         fmt.dateFormat = "MMMM yyyy"
         let label = fmt.string(from: window.start)
 

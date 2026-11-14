@@ -454,9 +454,10 @@ struct CozySettingsView: View {
     // MARK: - Single-Day Overrides
 
     private var singleDayOverridesCard: some View {
+        let logicalToday = DateHelpers.logicalToday()
         let upcomingOverrides = overrides
-            .filter { $0.date >= DateHelpers.logicalToday() }
-            .sorted { $0.date < $1.date }
+            .filter { $0.normalizedDay() >= logicalToday }
+            .sorted { $0.normalizedDay() < $1.normalizedDay() }
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -487,7 +488,7 @@ struct CozySettingsView: View {
                 ForEach(upcomingOverrides) { item in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(DateHelpers.fullHeaderDateString(for: item.date))
+                            Text(DateHelpers.fullHeaderDateString(for: item.normalizedDay()))
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(CozyTheme.inkPrimary)
                             if !isAddFriendly && !item.note.isEmpty {
@@ -877,7 +878,8 @@ struct CozySettingsView: View {
     // MARK: - Apple Calendar Two-Way Sync
 
     private var calendarSyncCard: some View {
-        let appleCalendars = CalendarFreeTimeService.shared.writableAppleCalendars()
+        let googleActive = preferences.useGoogleCalendarSync || preferences.pushTasksToGoogleCalendar
+        let appleCalendars = CalendarFreeTimeService.shared.writableAppleCalendars(excludeGoogleCalendars: googleActive)
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack {

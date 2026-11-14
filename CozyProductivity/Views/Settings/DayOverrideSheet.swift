@@ -9,7 +9,7 @@ struct DayOverrideSheet: View {
     var addFriendlyMode: Bool = false
     var onSaved: () -> Void
 
-    @State private var selectedDate: Date = DateHelpers.addDays(1, to: Date())
+    @State private var selectedDate: Date = DateHelpers.addDays(1, to: DateHelpers.logicalToday())
     @State private var availableMinutes: Int = 60
     @State private var note: String = ""
 
@@ -25,7 +25,7 @@ struct DayOverrideSheet: View {
                         DatePicker(
                             "Date",
                             selection: $selectedDate,
-                            in: DateHelpers.startOfDay(for: Date())...,
+                            in: DateHelpers.logicalToday()...,
                             displayedComponents: .date
                         )
                         .tint(CozyTheme.roseAccent)
@@ -113,14 +113,18 @@ struct DayOverrideSheet: View {
 
     private func saveOverride() {
         let normalized = DateHelpers.startOfDay(for: selectedDate)
-        if let existing = existingOverrides.first(where: { DateHelpers.isSameDay($0.date, normalized) }) {
+        if let existing = existingOverrides.first(where: { DateHelpers.isSameDay($0.normalizedDay(), normalized) }) {
+            existing.date = normalized
+            existing.dayKey = DateHelpers.dayKeyString(for: normalized)
+            existing.dayTimezoneID = DateHelpers.calendar.timeZone.identifier
             existing.availableMinutes = availableMinutes
             existing.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
         } else {
             let created = DayCapacityOverride(
                 date: normalized,
                 availableMinutes: availableMinutes,
-                note: note.trimmingCharacters(in: .whitespacesAndNewlines)
+                note: note.trimmingCharacters(in: .whitespacesAndNewlines),
+                calendar: DateHelpers.calendar
             )
             modelContext.insert(created)
         }

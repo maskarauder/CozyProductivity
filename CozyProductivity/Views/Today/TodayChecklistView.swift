@@ -29,8 +29,8 @@ struct TodayChecklistView: View {
         occurrences
             .filter {
                 $0.status != .skipped
-                    && $0.bonusForDate == nil
-                    && DateHelpers.isSameDay($0.scheduledDate, today)
+                    && $0.bonusDay() == nil
+                    && DateHelpers.isSameDay($0.scheduledDay(), today)
             }
             .sorted { lhs, rhs in
                 if lhs.isCompleted != rhs.isCompleted {
@@ -64,7 +64,7 @@ struct TodayChecklistView: View {
         occurrences.first {
             $0.status != .skipped
                 && $0.bonusSlot == slot
-                && ($0.bonusForDate.map { DateHelpers.isSameDay($0, today) } ?? false)
+                && ($0.bonusDay().map { DateHelpers.isSameDay($0, today) } ?? false)
         }
     }
 
@@ -73,6 +73,7 @@ struct TodayChecklistView: View {
             occurrences: occurrences,
             persistedLongestStreak: preferences.longestRecordedStreak,
             optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled,
+            historicalArchive: preferences.historicalStreakArchive,
             today: today
         )
     }
@@ -550,7 +551,7 @@ struct TodayChecklistView: View {
                                 )
                             )
 
-                        Text("\(DateHelpers.shortWeekdayName(for: occ.scheduledDate)) · \(DateHelpers.formatDuration(minutes: occ.displayDurationMinutes))")
+                        Text("\(DateHelpers.shortWeekdayName(for: occ.scheduledDay())) · \(DateHelpers.formatDuration(minutes: occ.displayDurationMinutes))")
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(CozyTheme.inkSecondary)
                     }
@@ -666,7 +667,7 @@ struct TodayChecklistView: View {
                                         Text(candidate.displayTitle)
                                             .font(.subheadline.weight(.semibold))
                                             .foregroundStyle(CozyTheme.inkPrimary)
-                                        Text("\(DateHelpers.shortMonthDayString(for: candidate.scheduledDate)) · \(DateHelpers.formatDuration(minutes: candidate.displayDurationMinutes))")
+                                        Text("\(DateHelpers.shortMonthDayString(for: candidate.scheduledDay())) · \(DateHelpers.formatDuration(minutes: candidate.displayDurationMinutes))")
                                             .font(.caption)
                                             .foregroundStyle(CozyTheme.inkSecondary)
                                     }
@@ -728,8 +729,8 @@ struct TodayChecklistView: View {
             },
             onMoveToFreestDay: {
                 occurrence.isManuallyPinned = false
-                if occurrence.scheduledDate == today {
-                    occurrence.scheduledDate = DateHelpers.addDays(1, to: today)
+                if DateHelpers.isSameDay(occurrence.scheduledDay(), today) {
+                    occurrence.setScheduledDay(DateHelpers.addDays(1, to: today))
                 }
                 try? modelContext.save()
                 onRebalanceRequested()
@@ -812,6 +813,7 @@ struct TodayChecklistView: View {
             occurrences: occurrences,
             persistedLongestStreak: preferences.longestRecordedStreak,
             optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled,
+            historicalArchive: preferences.historicalStreakArchive,
             today: today
         )
         let newTier = updatedSnapshot.tier(for: today)
@@ -854,7 +856,7 @@ struct TodayChecklistView: View {
     }
 
     private func moveOccurrenceToTomorrow(_ occurrence: TaskOccurrence) {
-        occurrence.scheduledDate = DateHelpers.addDays(1, to: today)
+        occurrence.setScheduledDay(DateHelpers.addDays(1, to: today))
         occurrence.isManuallyPinned = true
         try? modelContext.save()
         StreakAndBonusService.syncBonusSlots(
@@ -868,11 +870,17 @@ struct TodayChecklistView: View {
 
     private func deleteTemplatePreservingHistory(for occurrence: TaskOccurrence) {
         if let template = occurrence.template {
-            for item in template.occurrences where item.status == .pending {
-                modelContext.delete(item)
+            for item in template.occurrences {
+                if item.status == .pending {
+                    preferences.enqueuePendingDeletions(for: item)
+                    modelContext.delete(item)
+                } else {
+                    item.freezeSnapshotsFromCurrentState()
+                }
             }
             modelContext.delete(template)
         } else if occurrence.status == .pending {
+            preferences.enqueuePendingDeletions(for: occurrence)
             modelContext.delete(occurrence)
         }
         try? modelContext.save()

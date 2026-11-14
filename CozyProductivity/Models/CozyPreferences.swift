@@ -66,6 +66,12 @@ final class CozyPreferences {
     var confettiEnabled: Bool = true
     var addFriendlyMode: Bool = false
 
+    // MARK: - Durable Sync Queue, Busy Cache & Historical Streak Archive
+    var pendingGoogleDeletionsJSON: String = "[]"
+    var pendingEKDeletionsJSON: String = "[]"
+    var cachedGoogleBusySnapshotJSON: String = ""
+    var historicalStreakArchiveJSON: String = ""
+
     init(
         id: UUID = UUID(),
         sundayBudgetMinutes: Int = 180,
@@ -244,12 +250,147 @@ final class CozyPreferences {
         default: break
         }
     }
+
+    // MARK: - Pending Calendar Deletions, Busy Snapshot & Streak Archive Helpers
+
+    struct PendingGoogleEventDeletion: Codable, Equatable, Hashable {
+        let accountKey: String
+        let calendarID: String
+        let eventID: String
+    }
+
+    struct PendingEKEventDeletion: Codable, Equatable, Hashable {
+        let channelRaw: String
+        let eventIdentifier: String
+    }
+
+    struct CachedGoogleBusySnapshot: Codable, Equatable {
+        let destinationKey: String
+        let fetchedAt: Date
+        let busyMinutesByDayKey: [String: Int]
+    }
+
+    struct HistoricalStreakArchive: Codable, Equatable {
+        let archivedThroughDayKey: String
+        let streakEnteringNextDay: Int
+        let longestStreakThroughArchive: Int
+        let archivedGoldDays: Int
+        let archivedSilverDays: Int
+        let archivedBaseDays: Int
+        let optionalBonusTasksEnabled: Bool
+    }
+
+    var pendingGoogleDeletions: [PendingGoogleEventDeletion] {
+        get {
+            guard let data = pendingGoogleDeletionsJSON.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode([PendingGoogleEventDeletion].self, from: data) else {
+                return []
+            }
+            return decoded
+        }
+        set {
+            let unique = Array(Set(newValue))
+            if let data = try? JSONEncoder().encode(unique),
+               let json = String(data: data, encoding: .utf8) {
+                pendingGoogleDeletionsJSON = json
+            }
+        }
+    }
+
+    var pendingEKDeletions: [PendingEKEventDeletion] {
+        get {
+            guard let data = pendingEKDeletionsJSON.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode([PendingEKEventDeletion].self, from: data) else {
+                return []
+            }
+            return decoded
+        }
+        set {
+            let unique = Array(Set(newValue))
+            if let data = try? JSONEncoder().encode(unique),
+               let json = String(data: data, encoding: .utf8) {
+                pendingEKDeletionsJSON = json
+            }
+        }
+    }
+
+    var cachedGoogleBusySnapshot: CachedGoogleBusySnapshot? {
+        get {
+            guard !cachedGoogleBusySnapshotJSON.isEmpty,
+                  let data = cachedGoogleBusySnapshotJSON.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode(CachedGoogleBusySnapshot.self, from: data) else {
+                return nil
+            }
+            return decoded
+        }
+        set {
+            guard let newValue,
+                  let data = try? JSONEncoder().encode(newValue),
+                  let json = String(data: data, encoding: .utf8) else {
+                cachedGoogleBusySnapshotJSON = ""
+                return
+            }
+            cachedGoogleBusySnapshotJSON = json
+        }
+    }
+
+    var historicalStreakArchive: HistoricalStreakArchive? {
+        get {
+            guard !historicalStreakArchiveJSON.isEmpty,
+                  let data = historicalStreakArchiveJSON.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode(HistoricalStreakArchive.self, from: data) else {
+                return nil
+            }
+            return decoded
+        }
+        set {
+            guard let newValue,
+                  let data = try? JSONEncoder().encode(newValue),
+                  let json = String(data: data, encoding: .utf8) else {
+                historicalStreakArchiveJSON = ""
+                return
+            }
+            historicalStreakArchiveJSON = json
+        }
+    }
+
+    /// Retains remote Google / EventKit identifiers when a `TaskOccurrence` is about to be deleted from SwiftData
+    /// or migrated to a different destination calendar, ensuring failed remote deletions can be retried.
+    func enqueuePendingDeletions(for occurrence: TaskOccurrence, fallbackGoogleCalendarID: String? = nil) {
+        if let gEventID = occurrence.googleCalendarEventId, !gEventID.isEmpty {
+            let parsed = Self.parseGoogleDestination(occurrence.googleSyncedDestination)
+            let calID = parsed?.calendarID ?? fallbackGoogleCalendarID ?? googleCalendarID
+            let accKey = parsed?.accountKey ?? ""
+            var current = pendingGoogleDeletions
+            current.append(PendingGoogleEventDeletion(accountKey: accKey, calendarID: calID, eventID: gEventID))
+            pendingGoogleDeletions = current
+        }
+        if let ekGoogleID = occurrence.syncedEKEventIdentifier, !ekGoogleID.isEmpty {
+            var current = pendingEKDeletions
+            current.append(PendingEKEventDeletion(channelRaw: "google-bridge", eventIdentifier: ekGoogleID))
+            pendingEKDeletions = current
+        }
+        if let ekAppleID = occurrence.appleCalendarEventIdentifier, !ekAppleID.isEmpty {
+            var current = pendingEKDeletions
+            current.append(PendingEKEventDeletion(channelRaw: "apple", eventIdentifier: ekAppleID))
+            pendingEKDeletions = current
+        }
+    }
+
+    static func parseGoogleDestination(_ destination: String?) -> (accountKey: String, calendarID: String)? {
+        guard let destination, destination.hasPrefix("google-oauth|") else { return nil }
+        let parts = destination.split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return nil }
+        return (String(parts[1]), String(parts[2]))
+    }
 }
 
 @Model
 final class DayCapacityOverride {
     var id: UUID
     var date: Date
+    var dayKey: String = ""
+    var dayTimezoneID: String = ""
     var availableMinutes: Int
     var note: String
 
@@ -257,11 +398,30 @@ final class DayCapacityOverride {
         id: UUID = UUID(),
         date: Date,
         availableMinutes: Int,
-        note: String = ""
+        note: String = "",
+        calendar: Calendar? = nil
     ) {
         self.id = id
-        self.date = DateHelpers.startOfDay(for: date)
         self.availableMinutes = max(0, min(720, availableMinutes))
         self.note = note
+        if let calendar {
+            let norm = DateHelpers.startOfDay(for: date, calendar: calendar)
+            self.date = norm
+            self.dayKey = DateHelpers.dayKeyString(for: norm, calendar: calendar)
+            self.dayTimezoneID = calendar.timeZone.identifier
+        } else {
+            self.date = date
+            self.dayKey = ""
+            self.dayTimezoneID = ""
+        }
+    }
+
+    func normalizedDay(calendar: Calendar = DateHelpers.calendar) -> Date {
+        DateHelpers.resolveCivilDay(
+            dayKey: dayKey,
+            fallbackDate: date,
+            storedTimezoneID: dayTimezoneID,
+            calendar: calendar
+        ).date
     }
 }

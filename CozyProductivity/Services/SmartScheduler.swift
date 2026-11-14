@@ -66,6 +66,8 @@ struct DayCapacitySummary: Identifiable, Equatable {
 @MainActor
 enum SmartScheduler {
     static let defaultHorizonDays = 35
+    static let operationalHistoryBufferDays = 69
+    static let streakArchiveCutoffDays = 62
 
     // MARK: - Core Rebalance Entry Point
 
@@ -77,10 +79,6 @@ enum SmartScheduler {
         horizonDays: Int = defaultHorizonDays,
         calendar: Calendar = DateHelpers.calendar
     ) {
-        let templates = (try? context.fetch(FetchDescriptor<TaskTemplate>())) ?? []
-        let allOccurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
-        let overrides = (try? context.fetch(FetchDescriptor<DayCapacityOverride>())) ?? []
-
         let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
         let safeHorizon = max(7, horizonDays)
         let horizonEnd = DateHelpers.addDays(safeHorizon - 1, to: today, calendar: calendar)
@@ -88,10 +86,26 @@ enum SmartScheduler {
         let hasTodayCup = preferences.hasCupCheckIn(for: today, calendar: calendar)
         let todayCupHours = preferences.cupHours(for: today, calendar: calendar)
 
+        let fetchCutoff = DateHelpers.addDays(-operationalHistoryBufferDays, to: today, calendar: calendar)
+        let pendingRaw = OccurrenceStatus.pending.rawValue
+        let occDescriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.statusRaw == pendingRaw || occ.scheduledDate >= fetchCutoff
+            }
+        )
+
+        let templates = (try? context.fetch(FetchDescriptor<TaskTemplate>())) ?? []
+        let allOccurrences = (try? context.fetch(occDescriptor)) ?? []
+        let overrides = (try? context.fetch(FetchDescriptor<DayCapacityOverride>())) ?? []
+
+        for template in templates {
+            template.normalizeCivilDates(in: calendar)
+        }
+
         // 1. Build capacity & waking-hour tie-breaker tables for [today ... horizonEnd]
         var overrideMap: [Date: Int] = [:]
         for item in overrides {
-            overrideMap[DateHelpers.startOfDay(for: item.date, calendar: calendar)] = item.availableMinutes
+            overrideMap[item.normalizedDay(calendar: calendar)] = item.availableMinutes
         }
 
         var capacityByDay: [Date: Int] = [:]
@@ -113,22 +127,21 @@ enum SmartScheduler {
         }
 
         // 2. Reconcile past uncompleted occurrences & inactive/changed templates
+        let todayDailyKey = DateHelpers.dailyWindow(for: today, calendar: calendar).key
         var survivingOccurrences: [TaskOccurrence] = []
 
         for occ in allOccurrences {
-            let occDay = DateHelpers.startOfDay(for: occ.scheduledDate, calendar: calendar)
-            occ.scheduledDate = occDay
+            let occDay = occ.normalizeCivilDates(in: calendar)
 
             if occ.status == .pending,
-               let bDate = occ.bonusForDate,
-               DateHelpers.startOfDay(for: bDate, calendar: calendar) < today {
-                occ.bonusForDate = nil
-                occ.bonusSlot = 0
+               let bDay = occ.bonusDay(calendar: calendar),
+               bDay < today {
+                occ.setBonusDay(nil, calendar: calendar)
             }
 
             guard let template = occ.template else {
                 if occ.status == .pending {
-                    context.delete(occ)
+                    deleteOccurrence(occ, context: context, preferences: preferences)
                 } else {
                     survivingOccurrences.append(occ)
                 }
@@ -137,52 +150,42 @@ enum SmartScheduler {
 
             if !template.isActive {
                 if occ.status == .pending {
-                    context.delete(occ)
+                    deleteOccurrence(occ, context: context, preferences: preferences)
                 } else {
                     survivingOccurrences.append(occ)
                 }
                 continue
             }
 
-            let templateDeadline = template.normalizedHardDeadline(calendar: calendar)
-
-            // Refresh snapshots on pending items in case user edited title, emoji, duration, weight, or deadline
+            // Refresh snapshots on pending items ONLY (completed/skipped history remains frozen!)
             if occ.status == .pending {
-                occ.titleSnapshot = template.title
-                occ.emojiSnapshot = template.emoji
-                occ.durationMinutesSnapshot = template.durationMinutes
-                occ.hardDeadlineSnapshot = templateDeadline
-                if !occ.hasCustomWeightOverride {
-                    occ.weightSnapshotRaw = template.weight.rawValue
-                }
-
                 if !periodKeyMatchesRecurrence(occ.periodKey, recurrence: template.recurrence, intervalDays: template.customIntervalDays) {
-                    context.delete(occ)
+                    deleteOccurrence(occ, context: context, preferences: preferences)
                     continue
                 }
 
-                // If Today's cup is 0 (empty) and this task isn't forced today by a hard deadline, unpin so it can move back
+                let occWindow = DateHelpers.periodWindow(for: template, containing: occDay, calendar: calendar)
+                let scopedDeadline = effectivePeriodDeadline(for: template, window: occWindow, calendar: calendar)
+                occ.refreshPendingSnapshotsFromTemplate(periodDeadline: scopedDeadline, calendar: calendar)
+
+                // If Today's cup is 0 (empty) and this task isn't forced today by an active period deadline, unpin so it can move back
                 if hasTodayCup && todayCupHours == 0 && occDay == today {
-                    let forcedToday = templateDeadline.map { $0 <= today } ?? false
+                    let forcedToday = scopedDeadline.map { $0 <= today } ?? false
                     if !forcedToday {
                         occ.isManuallyPinned = false
                     }
                 }
             }
 
-            // Handle unfinished occurrences from strictly before today (or spilled recurring windows that have now expired)
+            // Handle unfinished occurrences from strictly before today (or expired recurring periods)
             if occ.status == .pending {
                 switch template.recurrence {
                 case .daily:
-                    if occDay < today {
-                        if let dl = templateDeadline, dl <= today {
-                            occ.scheduledDate = today
-                            survivingOccurrences.append(occ)
-                        } else {
-                            // Never pile missed daily tasks onto today
-                            occ.status = .skipped
-                            survivingOccurrences.append(occ)
-                        }
+                    if occDay < today || occ.periodKey < todayDailyKey {
+                        // Retire missed daily occurrences cleanly so expired deadlines never accumulate multiple copies onto Today
+                        occ.setBonusDay(nil, calendar: calendar)
+                        occ.status = .skipped
+                        survivingOccurrences.append(occ)
                     } else {
                         survivingOccurrences.append(occ)
                     }
@@ -196,20 +199,14 @@ enum SmartScheduler {
 
                 case .weekly, .biweekly, .monthly, .customDays:
                     let currentWindow = DateHelpers.periodWindow(for: template, containing: today, calendar: calendar)
-                    if occDay < today {
-                        if occ.periodKey == currentWindow.key {
-                            occ.isManuallyPinned = false
-                            survivingOccurrences.append(occ)
-                        } else if templateDeadline != nil {
-                            occ.isManuallyPinned = false
-                            survivingOccurrences.append(occ)
-                        } else {
-                            occ.status = .skipped
-                            survivingOccurrences.append(occ)
-                        }
-                    } else if occ.periodKey < currentWindow.key && templateDeadline == nil {
-                        // Previous period spilled onto this week when yesterday's cup was empty; now that the new period is active, skip old duplicate
+                    if occ.periodKey < currentWindow.key {
+                        // Past recurrence period has ended; retire it so it never piles up alongside currentWindow.key
+                        occ.setBonusDay(nil, calendar: calendar)
                         occ.status = .skipped
+                        survivingOccurrences.append(occ)
+                    } else if occDay < today {
+                        // Still inside currentWindow, just earlier in the week/month -> unpin to reschedule onto remaining days
+                        occ.isManuallyPinned = false
                         survivingOccurrences.append(occ)
                     } else {
                         survivingOccurrences.append(occ)
@@ -227,19 +224,21 @@ enum SmartScheduler {
             let mapKey = "\(templateID.uuidString)|\(occ.periodKey)"
             if let existing = occurrencesByTemplateAndPeriod[mapKey] {
                 if existing.status != .completed && occ.status == .completed {
-                    if existing.status == .pending { context.delete(existing) }
+                    if existing.status == .pending {
+                        deleteOccurrence(existing, context: context, preferences: preferences)
+                    }
                     occurrencesByTemplateAndPeriod[mapKey] = occ
                 } else if occ.status == .pending {
-                    context.delete(occ)
+                    deleteOccurrence(occ, context: context, preferences: preferences)
                 }
             } else {
                 occurrencesByTemplateAndPeriod[mapKey] = occ
             }
         }
 
-        // 3. Count completed occurrences FIRST using effectiveLoadMinutes (includes post-completion weight adjustments!)
+        // 3. Count completed occurrences FIRST using effectiveLoadMinutes (includes weight adjustments!)
         for occ in survivingOccurrences where occ.status == .completed {
-            let effectiveDay = DateHelpers.startOfDay(for: occ.bonusForDate ?? occ.scheduledDate, calendar: calendar)
+            let effectiveDay = occ.bonusDay(calendar: calendar) ?? occ.scheduledDay(calendar: calendar)
             if effectiveDay >= today && effectiveDay <= horizonEnd {
                 usedMinutesByDay[effectiveDay, default: 0] += occ.effectiveLoadMinutes
             }
@@ -247,13 +246,13 @@ enum SmartScheduler {
 
         // Count manually-pinned pending items — UNLESS Today's cup cannot fit a non-deadline pinned item on today
         for occ in occurrencesByTemplateAndPeriod.values where occ.status == .pending && occ.isManuallyPinned {
-            let d = occ.scheduledDate
+            let d = occ.scheduledDay(calendar: calendar)
             guard d >= today && d <= horizonEnd else { continue }
             if d == today && hasTodayCup {
                 let forcedToday = occ.effectiveHardDeadline(calendar: calendar).map { $0 <= today } ?? false
                 let todayRem = (capacityByDay[today] ?? 0) - (usedMinutesByDay[today] ?? 0)
                 if !forcedToday && (todayCupHours == 0 || todayRem < occ.effectiveLoadMinutes) {
-                    // Today's cup is empty or exceeded (e.g. after another task's weight increased) -> unpin & move back!
+                    // Today's cup is empty or exceeded -> unpin & move back!
                     occ.isManuallyPinned = false
                     continue
                 }
@@ -263,26 +262,23 @@ enum SmartScheduler {
 
         let activeTemplates = templates.filter { $0.isActive }
 
-        // 4. Phase A: Urgent Hard-Deadline Tasks Forced Onto Today (`hardDeadline <= today`)
+        // 4. Phase A: Urgent Hard-Deadline Tasks Forced Onto Today (`effectivePeriodDeadline <= today`)
         // Scheduled FIRST so they always appear on Today even when cup == 0, and claim Today's cup before non-deadline tasks.
         var templatesHandledForTodayDeadline: Set<String> = []
         for template in activeTemplates {
-            guard let dl = template.normalizedHardDeadline(calendar: calendar), dl <= today else { continue }
             if template.recurrence == .once {
+                guard let dl = template.normalizedHardDeadline(calendar: calendar), dl <= today else { continue }
                 let pKey = "once:\(template.id.uuidString)"
                 let mapKey = "\(template.id.uuidString)|\(pKey)"
-                let alreadyCompleted = survivingOccurrences.contains {
-                    $0.template?.id == template.id && $0.status == .completed
-                }
+                let alreadyCompleted = isOnceTemplateCompleted(template, survivingOccurrences: survivingOccurrences)
                 guard !alreadyCompleted else {
                     templatesHandledForTodayDeadline.insert(mapKey)
                     continue
                 }
                 if let existing = occurrencesByTemplateAndPeriod[mapKey] {
                     if existing.status == .pending {
-                        existing.scheduledDate = today
-                        existing.bonusForDate = nil
-                        existing.bonusSlot = 0
+                        existing.setScheduledDay(today, calendar: calendar)
+                        existing.setBonusDay(nil, calendar: calendar)
                         usedMinutesByDay[today, default: 0] += existing.effectiveLoadMinutes
                     }
                 } else {
@@ -291,7 +287,8 @@ enum SmartScheduler {
                         periodKey: pKey,
                         status: .pending,
                         isManuallyPinned: false,
-                        template: template
+                        template: template,
+                        calendar: calendar
                     )
                     context.insert(created)
                     occurrencesByTemplateAndPeriod[mapKey] = created
@@ -300,12 +297,15 @@ enum SmartScheduler {
                 templatesHandledForTodayDeadline.insert(mapKey)
             } else {
                 let window = DateHelpers.periodWindow(for: template, containing: today, calendar: calendar)
+                guard let dl = effectivePeriodDeadline(for: template, window: window, calendar: calendar),
+                      dl <= today else {
+                    continue
+                }
                 let mapKey = "\(template.id.uuidString)|\(window.key)"
                 if let existing = occurrencesByTemplateAndPeriod[mapKey] {
                     if existing.status == .pending {
-                        existing.scheduledDate = today
-                        existing.bonusForDate = nil
-                        existing.bonusSlot = 0
+                        existing.setScheduledDay(today, calendar: calendar)
+                        existing.setBonusDay(nil, calendar: calendar)
                         usedMinutesByDay[today, default: 0] += existing.effectiveLoadMinutes
                     }
                 } else {
@@ -314,7 +314,8 @@ enum SmartScheduler {
                         periodKey: window.key,
                         status: .pending,
                         isManuallyPinned: false,
-                        template: template
+                        template: template,
+                        calendar: calendar
                     )
                     context.insert(created)
                     occurrencesByTemplateAndPeriod[mapKey] = created
@@ -334,10 +335,12 @@ enum SmartScheduler {
                 hasTodayCup: hasTodayCup,
                 todayCupHours: todayCupHours,
                 handledMapKeys: templatesHandledForTodayDeadline,
+                survivingOccurrences: survivingOccurrences,
                 occurrencesMap: &occurrencesByTemplateAndPeriod,
                 usedMinutesByDay: &usedMinutesByDay,
                 capacityByDay: capacityByDay,
                 unbookedByDay: unbookedByDay,
+                preferences: preferences,
                 context: context,
                 calendar: calendar
             )
@@ -351,18 +354,21 @@ enum SmartScheduler {
             let candidateEnd: Date
             let hardDeadline: Date?
             let existingOccurrence: TaskOccurrence?
+            let calendar: Calendar
 
             var effectiveLoad: Int {
                 existingOccurrence?.effectiveLoadMinutes ?? template.effectiveLoadMinutes
             }
 
             var windowDaySpan: Int {
-                max(1, DateHelpers.daysBetween(candidateStart, and: candidateEnd) + 1)
+                max(1, DateHelpers.daysBetween(candidateStart, and: candidateEnd, calendar: calendar) + 1)
             }
         }
 
         let baseTodayItems = occurrencesByTemplateAndPeriod.values.filter {
-            $0.status != .skipped && $0.bonusForDate == nil && DateHelpers.isSameDay($0.scheduledDate, today, calendar: calendar)
+            $0.status != .skipped
+                && $0.bonusDay(calendar: calendar) == nil
+                && DateHelpers.isSameDay($0.scheduledDay(calendar: calendar), today, calendar: calendar)
         }
         let isTodayAlreadyFinished = !baseTodayItems.isEmpty && baseTodayItems.allSatisfy(\.isCompleted)
         let defaultFlexibleFloor = isTodayAlreadyFinished ? tomorrow : today
@@ -379,14 +385,28 @@ enum SmartScheduler {
                     continue
                 }
 
+                let anchor = template.normalizedAnchorDate(calendar: calendar)
+
                 if let existing = occurrencesByTemplateAndPeriod[mapKey] {
                     if existing.status == .completed || existing.status == .skipped || existing.isManuallyPinned {
                         continue
                     }
-                    let isTodayBonus = existing.bonusForDate.map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false
-                    var start = isTodayBonus ? tomorrow : defaultFlexibleFloor
+                    let isTodayBonus = existing.bonusDay(calendar: calendar).map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false
+                    let baseFloor = isTodayBonus ? tomorrow : defaultFlexibleFloor
+                    let desiredStart = max(baseFloor, anchor)
+
+                    if desiredStart > horizonEnd && (templateDeadline == nil || templateDeadline! > horizonEnd) {
+                        existing.setScheduledDay(desiredStart, calendar: calendar)
+                        continue
+                    }
+
+                    var start = min(horizonEnd, desiredStart)
                     var end = min(horizonEnd, DateHelpers.addDays(max(0, template.flexibleWindowDays - 1), to: start, calendar: calendar))
                     if let dl = templateDeadline {
+                        if dl > horizonEnd && desiredStart > horizonEnd {
+                            existing.setScheduledDay(min(desiredStart, dl), calendar: calendar)
+                            continue
+                        }
                         let clampedDL = min(horizonEnd, max(today, dl))
                         start = min(start, clampedDL)
                         end = clampedDL
@@ -397,15 +417,18 @@ enum SmartScheduler {
                         candidateStart: start,
                         candidateEnd: max(start, end),
                         hardDeadline: templateDeadline,
-                        existingOccurrence: existing
+                        existingOccurrence: existing,
+                        calendar: calendar
                     ))
                 } else {
-                    let alreadyDone = survivingOccurrences.contains {
-                        $0.template?.id == template.id && $0.status == .completed
-                    }
+                    let alreadyDone = isOnceTemplateCompleted(template, survivingOccurrences: survivingOccurrences)
                     if !alreadyDone {
-                        let baseAnchor = max(defaultFlexibleFloor, template.anchorDate)
-                        var start = baseAnchor <= horizonEnd ? baseAnchor : defaultFlexibleFloor
+                        let baseAnchor = max(defaultFlexibleFloor, anchor)
+                        // Defer creating occurrences whose requested start & deadline lie strictly beyond the optimization horizon
+                        if baseAnchor > horizonEnd && (templateDeadline == nil || templateDeadline! > horizonEnd) {
+                            continue
+                        }
+                        var start = min(horizonEnd, baseAnchor)
                         var end = min(horizonEnd, DateHelpers.addDays(max(0, template.flexibleWindowDays - 1), to: start, calendar: calendar))
                         if let dl = templateDeadline {
                             let clampedDL = min(horizonEnd, max(today, dl))
@@ -418,7 +441,8 @@ enum SmartScheduler {
                             candidateStart: start,
                             candidateEnd: max(start, end),
                             hardDeadline: templateDeadline,
-                            existingOccurrence: nil
+                            existingOccurrence: nil,
+                            calendar: calendar
                         ))
                     }
                 }
@@ -432,10 +456,7 @@ enum SmartScheduler {
                         let rawStart = max(today, window.start)
                         var cEnd = min(horizonEnd, window.end)
 
-                        let applicableDeadline: Date? = {
-                            guard let dl = templateDeadline, dl >= window.start && dl <= window.end else { return nil }
-                            return dl
-                        }()
+                        let applicableDeadline = effectivePeriodDeadline(for: template, window: window, calendar: calendar)
                         if let dl = applicableDeadline {
                             cEnd = min(cEnd, max(today, dl))
                         }
@@ -443,7 +464,7 @@ enum SmartScheduler {
                         if rawStart <= cEnd {
                             if let existing = occurrencesByTemplateAndPeriod[mapKey] {
                                 if existing.status == .pending && !existing.isManuallyPinned {
-                                    let isTodayBonus = existing.bonusForDate.map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false
+                                    let isTodayBonus = existing.bonusDay(calendar: calendar).map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false
                                     let preferredStart = (isTodayBonus || isTodayAlreadyFinished) ? max(tomorrow, window.start) : rawStart
                                     let finalStart = preferredStart <= cEnd ? preferredStart : rawStart
                                     jobs.append(FlexibleJob(
@@ -452,7 +473,8 @@ enum SmartScheduler {
                                         candidateStart: finalStart,
                                         candidateEnd: cEnd,
                                         hardDeadline: applicableDeadline,
-                                        existingOccurrence: existing
+                                        existingOccurrence: existing,
+                                        calendar: calendar
                                     ))
                                 }
                             } else {
@@ -464,7 +486,8 @@ enum SmartScheduler {
                                     candidateStart: finalStart,
                                     candidateEnd: cEnd,
                                     hardDeadline: applicableDeadline,
-                                    existingOccurrence: nil
+                                    existingOccurrence: nil,
+                                    calendar: calendar
                                 ))
                             }
                         }
@@ -535,7 +558,7 @@ enum SmartScheduler {
 
             let placedLoad: Int
             if let existing = job.existingOccurrence {
-                existing.scheduledDate = chosenDay
+                existing.setScheduledDay(chosenDay, calendar: calendar)
                 existing.status = .pending
                 placedLoad = existing.effectiveLoadMinutes
             } else {
@@ -544,7 +567,8 @@ enum SmartScheduler {
                     periodKey: job.periodKey,
                     status: .pending,
                     isManuallyPinned: false,
-                    template: job.template
+                    template: job.template,
+                    calendar: calendar
                 )
                 context.insert(created)
                 let mapKey = "\(job.template.id.uuidString)|\(job.periodKey)"
@@ -555,7 +579,16 @@ enum SmartScheduler {
             usedMinutesByDay[chosenDay, default: 0] += placedLoad
         }
 
-        let updatedOccurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
+        let archiveCutoff = DateHelpers.addDays(-streakArchiveCutoffDays, to: today, calendar: calendar)
+        StreakAndBonusService.refreshHistoricalArchiveIfNeeded(
+            context: context,
+            preferences: preferences,
+            operationalCutoff: archiveCutoff,
+            today: today,
+            calendar: calendar
+        )
+
+        let updatedOccurrences = (try? context.fetch(occDescriptor)) ?? []
         StreakAndBonusService.syncBonusSlots(
             context: context,
             occurrences: updatedOccurrences,
@@ -608,6 +641,42 @@ enum SmartScheduler {
         return (baseBudget, effective, unbooked)
     }
 
+    static func effectiveCapacityMinutes(
+        for date: Date,
+        preferences: CozyPreferences,
+        overridesByDay: [Date: Int] = [:],
+        calendarBusyMinutesByDay: [Date: Int] = [:],
+        today: Date? = nil,
+        calendar: Calendar = DateHelpers.calendar
+    ) -> Int {
+        let day = DateHelpers.startOfDay(for: date, calendar: calendar)
+        if let today {
+            let normToday = DateHelpers.startOfDay(for: today, calendar: calendar)
+            if day != normToday {
+                // Only `today` uses the daily cup check-in; other days use weekday budget / override
+                let weekday = calendar.component(.weekday, from: day)
+                let baseBudget = overridesByDay[day] ?? preferences.baseBudgetMinutes(forWeekday: weekday)
+                guard preferences.hasAnyCalendarBusySyncEnabled else { return baseBudget }
+                let wakingMinutes = max(60, (preferences.wakingEndHour - preferences.wakingStartHour) * 60)
+                let busy = max(0, calendarBusyMinutesByDay[day] ?? 0)
+                let unbooked = max(0, wakingMinutes - busy)
+                switch preferences.calendarDeductionMode {
+                case .subtractFromBudget:
+                    return min(unbooked, max(0, baseBudget - busy))
+                case .capByUnbookedWakingHours:
+                    return min(baseBudget, unbooked)
+                }
+            }
+        }
+        return computeDayCapacity(
+            for: day,
+            preferences: preferences,
+            overrideMinutes: overridesByDay[day],
+            calendarBusyMinutes: calendarBusyMinutesByDay[day] ?? 0,
+            calendar: calendar
+        ).effectiveCapacity
+    }
+
     static func chooseFreestDay(
         from startDate: Date,
         to endDate: Date,
@@ -642,7 +711,7 @@ enum SmartScheduler {
         return bestDay
     }
 
-    // MARK: - Day Summaries for UI Visualization
+    // MARK: - Day Summaries for UI Visualization (O(N + days))
 
     static func buildDaySummaries(
         from startDate: Date,
@@ -653,21 +722,48 @@ enum SmartScheduler {
         calendarBusyByDay: [Date: Int] = [:],
         calendar: Calendar = DateHelpers.calendar
     ) -> [DayCapacitySummary] {
-        let first = DateHelpers.startOfDay(for: startDate, calendar: calendar)
-        var overrideMap: [Date: Int] = [:]
-        for item in overrides {
-            overrideMap[DateHelpers.startOfDay(for: item.date, calendar: calendar)] = item.availableMinutes
+        struct DayLoadAccumulator {
+            var totalWeighted = 0
+            var totalClock = 0
+            var completedWeighted = 0
+            var completedClock = 0
         }
 
-        var occByDay: [Date: [TaskOccurrence]] = [:]
+        let first = DateHelpers.startOfDay(for: startDate, calendar: calendar)
+        let dayCount = max(1, days)
+        let last = DateHelpers.addDays(dayCount - 1, to: first, calendar: calendar)
+
+        var overrideMap: [Date: Int] = [:]
+        overrideMap.reserveCapacity(overrides.count)
+        for item in overrides {
+            overrideMap[item.normalizedDay(calendar: calendar)] = item.availableMinutes
+        }
+
+        var loadByDay: [Date: DayLoadAccumulator] = [:]
+        loadByDay.reserveCapacity(dayCount)
+
         for occ in occurrences where occ.status != .skipped {
-            let rawDate = occ.isCompleted ? (occ.bonusForDate ?? occ.scheduledDate) : occ.scheduledDate
-            let key = DateHelpers.startOfDay(for: rawDate, calendar: calendar)
-            occByDay[key, default: []].append(occ)
+            let day = occ.isCompleted
+                ? (occ.bonusDay(calendar: calendar) ?? occ.scheduledDay(calendar: calendar))
+                : occ.scheduledDay(calendar: calendar)
+            guard day >= first && day <= last else { continue }
+
+            let weighted = occ.effectiveLoadMinutes
+            let clock = occ.displayDurationMinutes
+            var acc = loadByDay[day] ?? DayLoadAccumulator()
+            acc.totalWeighted += weighted
+            acc.totalClock += clock
+            if occ.isCompleted {
+                acc.completedWeighted += weighted
+                acc.completedClock += clock
+            }
+            loadByDay[day] = acc
         }
 
         var summaries: [DayCapacitySummary] = []
-        for offset in 0..<max(1, days) {
+        summaries.reserveCapacity(dayCount)
+
+        for offset in 0..<dayCount {
             let day = DateHelpers.addDays(offset, to: first, calendar: calendar)
             let busy = calendarBusyByDay[day] ?? 0
             let cap = computeDayCapacity(
@@ -678,11 +774,7 @@ enum SmartScheduler {
                 calendar: calendar
             )
 
-            let dayItems = occByDay[day] ?? []
-            let totalWeighted = dayItems.reduce(0) { $0 + $1.effectiveLoadMinutes }
-            let totalClock = dayItems.reduce(0) { $0 + $1.displayDurationMinutes }
-            let completedWeighted = dayItems.filter { $0.isCompleted }.reduce(0) { $0 + $1.effectiveLoadMinutes }
-            let completedClock = dayItems.filter { $0.isCompleted }.reduce(0) { $0 + $1.displayDurationMinutes }
+            let acc = loadByDay[day] ?? DayLoadAccumulator()
 
             summaries.append(
                 DayCapacitySummary(
@@ -691,10 +783,10 @@ enum SmartScheduler {
                     calendarBusyMinutes: busy,
                     effectiveCapacityMinutes: cap.effectiveCapacity,
                     unbookedWakingMinutes: cap.unbookedWaking,
-                    scheduledMinutes: totalWeighted,
-                    scheduledClockMinutes: totalClock,
-                    completedMinutes: completedWeighted,
-                    completedClockMinutes: completedClock,
+                    scheduledMinutes: acc.totalWeighted,
+                    scheduledClockMinutes: acc.totalClock,
+                    completedMinutes: acc.completedWeighted,
+                    completedClockMinutes: acc.completedClock,
                     activeCupHours: preferences.cupHours(for: day, calendar: calendar)
                 )
             )
@@ -782,6 +874,37 @@ enum SmartScheduler {
 
     // MARK: - Internal Helpers
 
+    private static func deleteOccurrence(
+        _ occ: TaskOccurrence,
+        context: ModelContext,
+        preferences: CozyPreferences
+    ) {
+        preferences.enqueuePendingDeletions(for: occ)
+        context.delete(occ)
+    }
+
+    private static func isOnceTemplateCompleted(
+        _ template: TaskTemplate,
+        survivingOccurrences: [TaskOccurrence]
+    ) -> Bool {
+        if survivingOccurrences.contains(where: { $0.template?.id == template.id && $0.status == .completed }) {
+            return true
+        }
+        return template.occurrences.contains(where: { $0.status == .completed })
+    }
+
+    static func effectivePeriodDeadline(
+        for template: TaskTemplate,
+        window: DateHelpers.PeriodWindow,
+        calendar: Calendar
+    ) -> Date? {
+        guard let dl = template.normalizedHardDeadline(calendar: calendar) else { return nil }
+        if template.recurrence == .once {
+            return dl
+        }
+        return (dl >= window.start && dl <= window.end) ? dl : nil
+    }
+
     private static func periodKeyMatchesRecurrence(
         _ periodKey: String,
         recurrence: RecurrenceKind,
@@ -805,14 +928,17 @@ enum SmartScheduler {
         hasTodayCup: Bool,
         todayCupHours: Int?,
         handledMapKeys: Set<String>,
+        survivingOccurrences: [TaskOccurrence],
         occurrencesMap: inout [String: TaskOccurrence],
         usedMinutesByDay: inout [Date: Int],
         capacityByDay: [Date: Int],
         unbookedByDay: [Date: Int],
+        preferences: CozyPreferences,
         context: ModelContext,
         calendar: Calendar
     ) {
         let templateDeadline = template.normalizedHardDeadline(calendar: calendar)
+        let anchorDate = template.normalizedAnchorDate(calendar: calendar)
 
         if template.recurrence == .daily {
             let span = max(0, DateHelpers.daysBetween(today, and: horizonEnd, calendar: calendar))
@@ -831,7 +957,7 @@ enum SmartScheduler {
                     let itemLoad = occurrencesMap[mapKey]?.effectiveLoadMinutes ?? template.effectiveLoadMinutes
                     if todayCupHours == 0 || todayRem < itemLoad {
                         if let existing = occurrencesMap[mapKey], existing.status == .pending && !existing.isManuallyPinned {
-                            context.delete(existing)
+                            deleteOccurrence(existing, context: context, preferences: preferences)
                             occurrencesMap.removeValue(forKey: mapKey)
                         }
                         continue
@@ -840,7 +966,7 @@ enum SmartScheduler {
 
                 if let existing = occurrencesMap[mapKey] {
                     if existing.status == .pending && !existing.isManuallyPinned {
-                        existing.scheduledDate = day
+                        existing.setScheduledDay(day, calendar: calendar)
                         usedMinutesByDay[day, default: 0] += existing.effectiveLoadMinutes
                     }
                 } else {
@@ -849,7 +975,8 @@ enum SmartScheduler {
                         periodKey: window.key,
                         status: .pending,
                         isManuallyPinned: false,
-                        template: template
+                        template: template,
+                        calendar: calendar
                     )
                     context.insert(created)
                     occurrencesMap[mapKey] = created
@@ -859,7 +986,7 @@ enum SmartScheduler {
             return
         }
 
-        // Non-daily, pinned (`isAutoScheduled == false`)
+        // Non-daily, pinned (`isAutoScheduled == false`): preserve exact requested dates even beyond the 35-day horizon!
         if template.recurrence == .once {
             let pKey = "once:\(template.id.uuidString)"
             let mapKey = "\(template.id.uuidString)|\(pKey)"
@@ -867,9 +994,9 @@ enum SmartScheduler {
                 return
             }
 
-            var target = min(horizonEnd, max(today, template.anchorDate))
+            var target = max(today, anchorDate)
             if let dl = templateDeadline {
-                target = min(target, max(today, min(horizonEnd, dl)))
+                target = min(target, max(today, dl))
             }
 
             let itemLoad = occurrencesMap[mapKey]?.effectiveLoadMinutes ?? template.effectiveLoadMinutes
@@ -883,24 +1010,27 @@ enum SmartScheduler {
 
             if let existing = occurrencesMap[mapKey] {
                 if existing.status == .pending && !existing.isManuallyPinned {
-                    existing.scheduledDate = target
-                    usedMinutesByDay[target, default: 0] += existing.effectiveLoadMinutes
+                    existing.setScheduledDay(target, calendar: calendar)
+                    if target <= horizonEnd {
+                        usedMinutesByDay[target, default: 0] += existing.effectiveLoadMinutes
+                    }
                 }
             } else {
-                let alreadyDone = (try? context.fetch(FetchDescriptor<TaskOccurrence>()))?.contains {
-                    $0.template?.id == template.id && $0.status == .completed
-                } ?? false
+                let alreadyDone = isOnceTemplateCompleted(template, survivingOccurrences: survivingOccurrences)
                 if !alreadyDone {
                     let created = TaskOccurrence(
                         scheduledDate: target,
                         periodKey: pKey,
                         status: .pending,
                         isManuallyPinned: false,
-                        template: template
+                        template: template,
+                        calendar: calendar
                     )
                     context.insert(created)
                     occurrencesMap[mapKey] = created
-                    usedMinutesByDay[target, default: 0] += created.effectiveLoadMinutes
+                    if target <= horizonEnd {
+                        usedMinutesByDay[target, default: 0] += created.effectiveLoadMinutes
+                    }
                 }
             }
             return
@@ -908,8 +1038,8 @@ enum SmartScheduler {
 
         // Recurring pinned (Weekly, Biweekly, Monthly, Custom)
         var cursor = today
-        let anchorWeekday = calendar.component(.weekday, from: template.anchorDate)
-        let anchorDayOfMonth = calendar.component(.day, from: template.anchorDate)
+        let anchorWeekday = calendar.component(.weekday, from: anchorDate)
+        let anchorDayOfMonth = calendar.component(.day, from: anchorDate)
 
         while cursor <= horizonEnd {
             let window = DateHelpers.periodWindow(for: template, containing: cursor, calendar: calendar)
@@ -935,7 +1065,8 @@ enum SmartScheduler {
                     }
                 }()
 
-                if let dl = templateDeadline, dl >= window.start && dl <= window.end {
+                let periodDeadline = effectivePeriodDeadline(for: template, window: window, calendar: calendar)
+                if let dl = periodDeadline {
                     pinnedDay = min(pinnedDay, max(today, dl))
                 }
 
@@ -958,19 +1089,19 @@ enum SmartScheduler {
                             )
                         }
                         if destination == today && hasTodayCup {
-                            let forcedToday = templateDeadline.map { $0 <= today } ?? false
+                            let forcedToday = periodDeadline.map { $0 <= today } ?? false
                             let todayRem = (capacityByDay[today] ?? 0) - (usedMinutesByDay[today] ?? 0)
                             if !forcedToday && (todayCupHours == 0 || todayRem < itemLoad) {
                                 destination = tomorrow
                             }
                         }
-                        existing.scheduledDate = destination
+                        existing.setScheduledDay(destination, calendar: calendar)
                         usedMinutesByDay[destination, default: 0] += existing.effectiveLoadMinutes
                     }
                 } else if pinnedDay >= today && pinnedDay <= horizonEnd {
                     var destination = pinnedDay
                     if destination == today && hasTodayCup {
-                        let forcedToday = templateDeadline.map { $0 <= today } ?? false
+                        let forcedToday = periodDeadline.map { $0 <= today } ?? false
                         let todayRem = (capacityByDay[today] ?? 0) - (usedMinutesByDay[today] ?? 0)
                         if !forcedToday && (todayCupHours == 0 || todayRem < itemLoad) {
                             destination = tomorrow
@@ -981,7 +1112,8 @@ enum SmartScheduler {
                         periodKey: window.key,
                         status: .pending,
                         isManuallyPinned: false,
-                        template: template
+                        template: template,
+                        calendar: calendar
                     )
                     context.insert(created)
                     occurrencesMap[mapKey] = created

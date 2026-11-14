@@ -48,10 +48,10 @@ struct TaskEditorSheet: View {
             _durationMinutes = State(initialValue: task.durationMinutes)
             _weight = State(initialValue: task.weight)
             _hasHardDeadline = State(initialValue: task.hasHardDeadline)
-            _hardDeadlineDate = State(initialValue: task.hardDeadlineDate ?? DateHelpers.addDays(3, to: DateHelpers.logicalToday()))
+            _hardDeadlineDate = State(initialValue: task.normalizedHardDeadline() ?? task.hardDeadlineDate ?? DateHelpers.addDays(3, to: DateHelpers.logicalToday()))
             _customIntervalDays = State(initialValue: task.customIntervalDays)
             _isAutoScheduled = State(initialValue: task.isAutoScheduled)
-            _anchorDate = State(initialValue: task.anchorDate)
+            _anchorDate = State(initialValue: task.normalizedAnchorDate())
             _flexibleWindowDays = State(initialValue: task.flexibleWindowDays)
         }
     }
@@ -458,25 +458,23 @@ struct TaskEditorSheet: View {
             task.recurrence = recurrence
             task.durationMinutes = durationMinutes
             task.weight = weight
-            task.hasHardDeadline = hasHardDeadline
-            task.hardDeadlineDate = normalizedDeadline
+            task.setHardDeadline(normalizedDeadline, hasDeadline: hasHardDeadline)
             task.customIntervalDays = customIntervalDays
             task.isAutoScheduled = recurrence == .daily ? false : isAutoScheduled
-            task.anchorDate = DateHelpers.startOfDay(for: anchorDate)
+            task.setAnchorDate(anchorDate)
             task.flexibleWindowDays = flexibleWindowDays
 
-            // Ensure pending occurrences and any occurrence scheduled/completed today reflect the edited weight & deadline
-            let logicalToday = DateHelpers.logicalToday()
-            for occ in task.occurrences {
-                let effectiveDay = occ.bonusForDate ?? occ.scheduledDate
-                if occ.status == .pending || DateHelpers.isSameDay(effectiveDay, logicalToday) {
-                    occ.weightSnapshotRaw = weight.rawValue
-                    occ.hasCustomWeightOverride = false
-                    occ.hardDeadlineSnapshot = normalizedDeadline
-                    occ.titleSnapshot = trimmedTitle
-                    occ.emojiSnapshot = emoji
-                    occ.durationMinutesSnapshot = durationMinutes
-                }
+            // Refresh snapshots ONLY on pending occurrences so completed/skipped history stays frozen
+            for occ in task.occurrences where occ.status == .pending {
+                occ.hasCustomWeightOverride = false
+                let occDay = occ.scheduledDay()
+                let win = DateHelpers.periodWindow(for: task, containing: occDay)
+                let scopedDeadline = SmartScheduler.effectivePeriodDeadline(
+                    for: task,
+                    window: win,
+                    calendar: DateHelpers.calendar
+                )
+                occ.refreshPendingSnapshotsFromTemplate(periodDeadline: scopedDeadline)
             }
         } else {
             let created = TaskTemplate(
@@ -492,7 +490,8 @@ struct TaskEditorSheet: View {
                 customIntervalDays: customIntervalDays,
                 isAutoScheduled: recurrence == .daily ? false : isAutoScheduled,
                 anchorDate: anchorDate,
-                flexibleWindowDays: flexibleWindowDays
+                flexibleWindowDays: flexibleWindowDays,
+                calendar: DateHelpers.calendar
             )
             modelContext.insert(created)
         }

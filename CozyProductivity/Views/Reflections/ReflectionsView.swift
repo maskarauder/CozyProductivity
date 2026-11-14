@@ -251,7 +251,9 @@ struct ReflectionsView: View {
         let snapshot = StreakAndBonusService.evaluate(
             occurrences: occurrences,
             persistedLongestStreak: preferences.longestRecordedStreak,
-            optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled
+            optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled,
+            historicalArchive: preferences.historicalStreakArchive,
+            today: DateHelpers.logicalToday()
         )
 
         return VStack(alignment: .leading, spacing: 12) {

@@ -76,6 +76,8 @@ final class NotificationManager {
 
         guard isAuthorized else { return }
 
+        let logicalNow = DateHelpers.logicalDay(for: now, calendar: calendar)
+
         // 1. End-of-Day Summary Notifications (today with live accomplishments + next 7 days fallback)
         if preferences.dailySummaryEnabled {
             let todayStart = DateHelpers.startOfDay(for: now, calendar: calendar)
@@ -90,15 +92,16 @@ final class NotificationManager {
                     continue
                 }
 
+                let targetLogicalDay = DateHelpers.logicalDay(for: fireDate, calendar: calendar)
                 let content = UNMutableNotificationContent()
                 content.sound = .default
 
-                if dayOffset == 0 {
-                    let digest = SummaryBuilder.dailyDigest(for: todayStart, occurrences: occurrences, calendar: calendar)
+                if targetLogicalDay == logicalNow {
+                    let digest = SummaryBuilder.dailyDigest(for: logicalNow, occurrences: occurrences, calendar: calendar)
                     content.title = digest.notificationTitle
                     content.body = digest.notificationBody
                 } else {
-                    let digest = SummaryBuilder.dailyDigest(for: targetDay, occurrences: occurrences, calendar: calendar)
+                    let digest = SummaryBuilder.dailyDigest(for: targetLogicalDay, occurrences: occurrences, calendar: calendar)
                     if digest.completedCount > 0 {
                         content.title = digest.notificationTitle
                         content.body = digest.notificationBody
@@ -130,15 +133,16 @@ final class NotificationManager {
                 calendar: calendar
             )
 
-            let currentWeekKey = DateHelpers.weekWindow(containing: now, calendar: calendar).key
+            let currentWeekKey = DateHelpers.weekWindow(containing: logicalNow, calendar: calendar).key
 
             for (index, fireDate) in upcomingWeeklyDates.enumerated() {
                 let content = UNMutableNotificationContent()
                 content.sound = .default
 
-                let targetWeekKey = DateHelpers.weekWindow(containing: fireDate, calendar: calendar).key
+                let fireLogicalDay = DateHelpers.logicalDay(for: fireDate, calendar: calendar)
+                let targetWeekKey = DateHelpers.weekWindow(containing: fireLogicalDay, calendar: calendar).key
                 if index == 0 && targetWeekKey == currentWeekKey {
-                    let digest = SummaryBuilder.weeklyDigest(containing: now, occurrences: occurrences, calendar: calendar)
+                    let digest = SummaryBuilder.weeklyDigest(containing: logicalNow, occurrences: occurrences, calendar: calendar)
                     content.title = digest.notificationTitle
                     content.body = digest.notificationBody
                 } else {
@@ -168,15 +172,16 @@ final class NotificationManager {
                 calendar: calendar
             )
 
-            let currentMonthKey = DateHelpers.monthWindow(containing: now, calendar: calendar).key
+            let currentMonthKey = DateHelpers.monthWindow(containing: logicalNow, calendar: calendar).key
 
             for (index, fireDate) in upcomingMonthlyDates.enumerated() {
                 let content = UNMutableNotificationContent()
                 content.sound = .default
 
-                let targetMonthKey = DateHelpers.monthWindow(containing: fireDate, calendar: calendar).key
+                let fireLogicalDay = DateHelpers.logicalDay(for: fireDate, calendar: calendar)
+                let targetMonthKey = DateHelpers.monthWindow(containing: fireLogicalDay, calendar: calendar).key
                 if index == 0 && targetMonthKey == currentMonthKey {
-                    let digest = SummaryBuilder.monthlyDigest(containing: now, occurrences: occurrences, calendar: calendar)
+                    let digest = SummaryBuilder.monthlyDigest(containing: logicalNow, occurrences: occurrences, calendar: calendar)
                     content.title = digest.notificationTitle
                     content.body = digest.notificationBody
                 } else {
@@ -201,7 +206,7 @@ final class NotificationManager {
         let granted = await requestPermissionIfNeeded()
         guard granted else { return false }
 
-        let digest = SummaryBuilder.dailyDigest(for: Date(), occurrences: occurrences)
+        let digest = SummaryBuilder.dailyDigest(for: DateHelpers.logicalToday(), occurrences: occurrences)
         let content = UNMutableNotificationContent()
         content.title = digest.notificationTitle
         content.body = digest.notificationBody

@@ -25,22 +25,26 @@ struct ScheduleOverviewView: View {
         DateHelpers.logicalToday()
     }
 
-    private var fourteenDaySummaries: [DayCapacitySummary] {
-        SmartScheduler.buildDaySummaries(
-            from: today,
+    private struct TimelineSnapshot {
+        let summaries: [DayCapacitySummary]
+        let selectedSummary: DayCapacitySummary
+        let occurrencesOnSelectedDay: [TaskOccurrence]
+    }
+
+    private func makeTimelineSnapshot() -> TimelineSnapshot {
+        let currentToday = today
+        let summaries = SmartScheduler.buildDaySummaries(
+            from: currentToday,
             days: 14,
             occurrences: occurrences,
             preferences: preferences,
             overrides: overrides,
             calendarBusyByDay: calendarBusyByDay
         )
-    }
-
-    private var selectedSummary: DayCapacitySummary {
-        fourteenDaySummaries.first { DateHelpers.isSameDay($0.date, selectedDay) }
-            ?? fourteenDaySummaries.first
+        let activeSummary = summaries.first { DateHelpers.isSameDay($0.date, selectedDay) }
+            ?? summaries.first
             ?? DayCapacitySummary(
-                date: today,
+                date: currentToday,
                 baseBudgetMinutes: 90,
                 calendarBusyMinutes: 0,
                 effectiveCapacityMinutes: 90,
@@ -48,16 +52,23 @@ struct ScheduleOverviewView: View {
                 scheduledMinutes: 0,
                 completedMinutes: 0
             )
-    }
 
-    private var occurrencesOnSelectedDay: [TaskOccurrence] {
-        occurrences
+        let targetDate = activeSummary.date
+        let dayOccurrences = occurrences
             .filter { occ in
                 guard occ.status != .skipped else { return false }
-                let effectiveDate = occ.isCompleted ? (occ.bonusForDate ?? occ.scheduledDate) : occ.scheduledDate
-                return DateHelpers.isSameDay(effectiveDate, selectedSummary.date)
+                let effectiveDate = occ.isCompleted
+                    ? (occ.bonusDay() ?? occ.scheduledDay())
+                    : occ.scheduledDay()
+                return DateHelpers.isSameDay(effectiveDate, targetDate)
             }
             .sorted { $0.effectiveLoadMinutes > $1.effectiveLoadMinutes }
+
+        return TimelineSnapshot(
+            summaries: summaries,
+            selectedSummary: activeSummary,
+            occurrencesOnSelectedDay: dayOccurrences
+        )
     }
 
     private var isADDFriendly: Bool {
@@ -158,7 +169,11 @@ struct ScheduleOverviewView: View {
     // MARK: - 14-Day Free-Time Strip & Selected Day Breakdown
 
     private var timelineContent: some View {
-        let maxCap = max(120, fourteenDaySummaries.map { max($0.effectiveCapacityMinutes, $0.scheduledMinutes) }.max() ?? 180)
+        let snapshot = makeTimelineSnapshot()
+        let summaries = snapshot.summaries
+        let activeSummary = snapshot.selectedSummary
+        let dayOccurrences = snapshot.occurrencesOnSelectedDay
+        let maxCap = max(120, summaries.map { max($0.effectiveCapacityMinutes, $0.scheduledMinutes) }.max() ?? 180)
 
         return VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 12) {
@@ -176,8 +191,8 @@ struct ScheduleOverviewView: View {
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .bottom, spacing: 10) {
-                        ForEach(fourteenDaySummaries) { summary in
-                            let isSelected = DateHelpers.isSameDay(summary.date, selectedSummary.date)
+                        ForEach(summaries) { summary in
+                            let isSelected = DateHelpers.isSameDay(summary.date, activeSummary.date)
                             let capHeight = max(14, CGFloat(summary.effectiveCapacityMinutes) / CGFloat(maxCap) * 108)
                             let usedHeight = summary.effectiveCapacityMinutes > 0
                                 ? min(capHeight, CGFloat(summary.scheduledMinutes) / CGFloat(maxCap) * 108)
@@ -255,27 +270,27 @@ struct ScheduleOverviewView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(isADDFriendly ? DateHelpers.shortMonthDayString(for: selectedSummary.date) : DateHelpers.fullHeaderDateString(for: selectedSummary.date))
+                        Text(isADDFriendly ? DateHelpers.shortMonthDayString(for: activeSummary.date) : DateHelpers.fullHeaderDateString(for: activeSummary.date))
                             .font(.system(.headline, design: .rounded, weight: .bold))
                             .foregroundStyle(CozyTheme.inkPrimary)
                         Text(
                             isADDFriendly
-                                ? "\(DateHelpers.formatDuration(minutes: selectedSummary.remainingFreeMinutes)) free"
-                                : "\(DateHelpers.formatDuration(minutes: selectedSummary.scheduledMinutes)) weighted load · \(DateHelpers.formatDuration(minutes: selectedSummary.remainingFreeMinutes)) free capacity left"
+                                ? "\(DateHelpers.formatDuration(minutes: activeSummary.remainingFreeMinutes)) free"
+                                : "\(DateHelpers.formatDuration(minutes: activeSummary.scheduledMinutes)) weighted load · \(DateHelpers.formatDuration(minutes: activeSummary.remainingFreeMinutes)) free capacity left"
                         )
                         .font(.caption)
                         .foregroundStyle(CozyTheme.inkSecondary)
                     }
                     Spacer()
-                    if let cupHours = selectedSummary.activeCupHours {
+                    if let cupHours = activeSummary.activeCupHours {
                         Text(isADDFriendly ? "\(cupHours)h" : "\(cupHours == 0 ? "🫖" : "🍵") Cup \(cupHours)h")
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(CozyTheme.deepRose)
                             .padding(.horizontal, 9)
                             .padding(.vertical, 5)
                             .background(Capsule().fill(CozyTheme.softBlushFill))
-                    } else if selectedSummary.calendarBusyMinutes > 0 {
-                        Label("\(DateHelpers.formatDuration(minutes: selectedSummary.calendarBusyMinutes)) cal", systemImage: "calendar")
+                    } else if activeSummary.calendarBusyMinutes > 0 {
+                        Label("\(DateHelpers.formatDuration(minutes: activeSummary.calendarBusyMinutes)) cal", systemImage: "calendar")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(CozyTheme.deepRose)
                             .padding(.horizontal, 9)
@@ -284,11 +299,11 @@ struct ScheduleOverviewView: View {
                     }
                 }
 
-                if occurrencesOnSelectedDay.isEmpty {
+                if dayOccurrences.isEmpty {
                     Text(
                         isADDFriendly
                             ? "No tasks"
-                            : (selectedSummary.activeCupHours == 0
+                            : (activeSummary.activeCupHours == 0
                                 ? "Cup is resting at 0 hours today — tasks moved back a day 🌸"
                                 : "No tasks scheduled on this day 🌸")
                     )
@@ -296,7 +311,7 @@ struct ScheduleOverviewView: View {
                     .foregroundStyle(CozyTheme.inkSecondary)
                     .padding(.vertical, 12)
                 } else {
-                    ForEach(occurrencesOnSelectedDay) { occ in
+                    ForEach(dayOccurrences) { occ in
                         let weight = occ.displayWeight
                         let deadline = occ.effectiveHardDeadline()
 

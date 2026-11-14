@@ -346,15 +346,47 @@ struct TodayTaskEntity: AppEntity, Identifiable {
     }
 }
 
+@MainActor
+private enum CozyIntentDataHelper {
+    static func fetchOperationalOccurrences(
+        in context: ModelContext,
+        around today: Date
+    ) -> [TaskOccurrence] {
+        let cutoff = DateHelpers.addDays(
+            -SmartScheduler.operationalHistoryBufferDays,
+            to: DateHelpers.startOfDay(for: today)
+        )
+        let pendingRaw = OccurrenceStatus.pending.rawValue
+        let descriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.statusRaw == pendingRaw || occ.scheduledDate >= cutoff
+            },
+            sortBy: [SortDescriptor(\TaskOccurrence.scheduledDate, order: .forward)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
+    static func fetchOccurrence(id: UUID, in context: ModelContext) -> TaskOccurrence? {
+        var descriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.id == id
+            }
+        )
+        descriptor.fetchLimit = 1
+        return (try? context.fetch(descriptor))?.first
+    }
+}
+
 struct TodayTaskEntityQuery: EntityStringQuery {
     func entities(for identifiers: [String]) async throws -> [TodayTaskEntity] {
-        let idSet = Set(identifiers)
+        let uuids = identifiers.compactMap(UUID.init)
         return await MainActor.run {
             let context = CozyModelContainer.shared.mainContext
-            let occurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
-            return occurrences
-                .filter { idSet.contains($0.id.uuidString) }
-                .map { Self.makeEntity(from: $0) }
+            return uuids.compactMap { uuid in
+                CozyIntentDataHelper.fetchOccurrence(id: uuid, in: context).map {
+                    Self.makeEntity(from: $0)
+                }
+            }
         }
     }
 
@@ -380,7 +412,7 @@ struct TodayTaskEntityQuery: EntityStringQuery {
         let context = CozyModelContainer.shared.mainContext
         let prefs = CozyModelContainer.fetchOrCreatePreferences(in: context)
         let today = DateHelpers.logicalToday()
-        let occurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
+        let occurrences = CozyIntentDataHelper.fetchOperationalOccurrences(in: context, around: today)
 
         StreakAndBonusService.syncBonusSlots(
             context: context,
@@ -391,15 +423,15 @@ struct TodayTaskEntityQuery: EntityStringQuery {
 
         let basePending = occurrences.filter {
             $0.status == .pending
-                && $0.bonusForDate == nil
-                && DateHelpers.isSameDay($0.scheduledDate, today)
+                && $0.bonusDay() == nil
+                && DateHelpers.isSameDay($0.scheduledDay(), today)
         }
         let bonusPending: [TaskOccurrence]
         if prefs.optionalBonusTasksEnabled {
             bonusPending = occurrences
                 .filter {
                     $0.status == .pending
-                        && ($0.bonusForDate.map { DateHelpers.isSameDay($0, today) } ?? false)
+                        && ($0.bonusDay().map { DateHelpers.isSameDay($0, today) } ?? false)
                 }
                 .sorted { $0.bonusSlot < $1.bonusSlot }
         } else {
@@ -411,7 +443,7 @@ struct TodayTaskEntityQuery: EntityStringQuery {
 
     @MainActor
     private static func makeEntity(from occ: TaskOccurrence) -> TodayTaskEntity {
-        let bonusPrefix = occ.bonusForDate != nil ? "Bonus #\(max(1, occ.bonusSlot)) · " : ""
+        let bonusPrefix = occ.bonusDay() != nil ? "Bonus #\(max(1, occ.bonusSlot)) · " : ""
         let subtitle = "\(bonusPrefix)\(DateHelpers.formatDuration(minutes: occ.displayDurationMinutes)) · \(occ.displayWeight.badgeLabel) · \(occ.recurrenceLabel)"
         return TodayTaskEntity(
             id: occ.id.uuidString,
@@ -480,46 +512,50 @@ struct AddCozyTaskIntent: AppIntent {
             context.insert(template)
             try? context.save()
 
+            let occurrences: [TaskOccurrence]
             if prefs.shouldAutoSyncCalendarsOnChange {
                 _ = await GoogleCalendarService.shared.syncCalendarsAndRebalance(
                     context: context,
                     preferences: prefs,
                     referenceDate: today
                 )
+                occurrences = CozyIntentDataHelper.fetchOperationalOccurrences(in: context, around: today)
             } else {
                 SmartScheduler.rebalance(
                     context: context,
                     preferences: prefs,
                     referenceDate: today
                 )
-                let latest = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
+                let latest = CozyIntentDataHelper.fetchOperationalOccurrences(in: context, around: today)
                 await NotificationManager.shared.syncSummaryNotifications(
                     preferences: prefs,
                     occurrences: latest
                 )
+                occurrences = latest
             }
 
-            let occurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
             let firstScheduled = occurrences
                 .filter { $0.template?.id == template.id && $0.status == .pending }
-                .sorted { $0.scheduledDate < $1.scheduledDate }
+                .sorted { $0.scheduledDay() < $1.scheduledDay() }
                 .first
 
             let durLabel = DateHelpers.formatDuration(minutes: clampedDuration)
             if prefs.addFriendlyMode {
                 if let placed = firstScheduled {
-                    let dayText = DateHelpers.isSameDay(placed.scheduledDate, today)
+                    let placedDay = placed.scheduledDay()
+                    let dayText = DateHelpers.isSameDay(placedDay, today)
                         ? "today"
-                        : DateHelpers.shortMonthDayString(for: placed.scheduledDate)
+                        : DateHelpers.shortMonthDayString(for: placedDay)
                     return "Added \(cleanTitle) (\(durLabel), \(selectedWeight.title)) for \(dayText)."
                 }
                 return "Added \(cleanTitle) (\(durLabel), \(selectedWeight.title))."
             }
 
             if let placed = firstScheduled {
-                let dayText = DateHelpers.isSameDay(placed.scheduledDate, today)
+                let placedDay = placed.scheduledDay()
+                let dayText = DateHelpers.isSameDay(placedDay, today)
                     ? "today"
-                    : DateHelpers.fullHeaderDateString(for: placed.scheduledDate)
+                    : DateHelpers.fullHeaderDateString(for: placedDay)
                 return "Added “\(cleanTitle)” (\(kind.title), \(durLabel), \(selectedWeight.badgeLabel)) and scheduled it for \(dayText)."
             } else {
                 return "Added “\(cleanTitle)” (\(kind.title), \(durLabel), \(selectedWeight.badgeLabel)) to Cozy."
@@ -556,28 +592,30 @@ struct SetDailyCupIntent: AppIntent {
             prefs.recordCupCheckIn(hours: clampedHours, for: today)
             try? context.save()
 
+            let occurrences: [TaskOccurrence]
             if prefs.shouldAutoSyncCalendarsOnChange {
                 _ = await GoogleCalendarService.shared.syncCalendarsAndRebalance(
                     context: context,
                     preferences: prefs,
                     referenceDate: today
                 )
+                occurrences = CozyIntentDataHelper.fetchOperationalOccurrences(in: context, around: today)
             } else {
                 SmartScheduler.rebalance(
                     context: context,
                     preferences: prefs,
                     referenceDate: today
                 )
-                let latest = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
+                let latest = CozyIntentDataHelper.fetchOperationalOccurrences(in: context, around: today)
                 await NotificationManager.shared.syncSummaryNotifications(
                     preferences: prefs,
                     occurrences: latest
                 )
+                occurrences = latest
             }
 
-            let occurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
             let todayPending = occurrences.filter {
-                $0.status == .pending && $0.bonusForDate == nil && DateHelpers.isSameDay($0.scheduledDate, today)
+                $0.status == .pending && $0.bonusDay() == nil && DateHelpers.isSameDay($0.scheduledDay(), today)
             }
 
             if prefs.addFriendlyMode {
@@ -620,14 +658,29 @@ struct CompleteCozyTaskIntent: AppIntent {
             let context = CozyModelContainer.shared.mainContext
             let prefs = CozyModelContainer.fetchOrCreatePreferences(in: context)
             let today = DateHelpers.logicalToday()
-            let occurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
+            var occurrences = CozyIntentDataHelper.fetchOperationalOccurrences(in: context, around: today)
 
-            guard let matched = occurrences.first(where: { $0.id.uuidString == targetID }) else {
+            let matched: TaskOccurrence? = occurrences.first(where: { $0.id.uuidString == targetID })
+                ?? UUID(uuidString: targetID).flatMap { CozyIntentDataHelper.fetchOccurrence(id: $0, in: context) }
+
+            guard let matched else {
                 return "I couldn't find that task on today's checklist."
+            }
+
+            if !occurrences.contains(where: { $0.id == matched.id }) {
+                occurrences.append(matched)
             }
 
             matched.isCompleted = true
             try? context.save()
+
+            let archiveCutoff = DateHelpers.addDays(-SmartScheduler.streakArchiveCutoffDays, to: today)
+            StreakAndBonusService.refreshHistoricalArchiveIfNeeded(
+                context: context,
+                preferences: prefs,
+                operationalCutoff: archiveCutoff,
+                today: today
+            )
 
             StreakAndBonusService.syncBonusSlots(
                 context: context,
@@ -640,6 +693,7 @@ struct CompleteCozyTaskIntent: AppIntent {
                 occurrences: occurrences,
                 persistedLongestStreak: prefs.longestRecordedStreak,
                 optionalBonusTasksEnabled: prefs.optionalBonusTasksEnabled,
+                historicalArchive: prefs.historicalStreakArchive,
                 today: today
             )
             if prefs.streaksEnabled && snapshot.longestStreak > prefs.longestRecordedStreak {
@@ -660,7 +714,7 @@ struct CompleteCozyTaskIntent: AppIntent {
             }
 
             let remaining = occurrences.filter {
-                $0.status == .pending && $0.bonusForDate == nil && DateHelpers.isSameDay($0.scheduledDate, today)
+                $0.status == .pending && $0.bonusDay() == nil && DateHelpers.isSameDay($0.scheduledDay(), today)
             }.count
 
             if prefs.addFriendlyMode {
@@ -707,7 +761,7 @@ struct ReadTodaysChecklistIntent: AppIntent {
             let context = CozyModelContainer.shared.mainContext
             let prefs = CozyModelContainer.fetchOrCreatePreferences(in: context)
             let today = DateHelpers.logicalToday()
-            let occurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
+            let occurrences = CozyIntentDataHelper.fetchOperationalOccurrences(in: context, around: today)
 
             StreakAndBonusService.syncBonusSlots(
                 context: context,
@@ -717,12 +771,12 @@ struct ReadTodaysChecklistIntent: AppIntent {
             )
 
             let baseToday = occurrences.filter {
-                $0.status != .skipped && $0.bonusForDate == nil && DateHelpers.isSameDay($0.scheduledDate, today)
+                $0.status != .skipped && $0.bonusDay() == nil && DateHelpers.isSameDay($0.scheduledDay(), today)
             }
             let pendingBase = baseToday.filter { !$0.isCompleted }
             let bonusToday = prefs.optionalBonusTasksEnabled
                 ? occurrences
-                    .filter { $0.status != .skipped && ($0.bonusForDate.map { DateHelpers.isSameDay($0, today) } ?? false) }
+                    .filter { $0.status != .skipped && ($0.bonusDay().map { DateHelpers.isSameDay($0, today) } ?? false) }
                     .sorted { $0.bonusSlot < $1.bonusSlot }
                 : []
             let pendingBonus = bonusToday.filter { !$0.isCompleted }
@@ -775,12 +829,20 @@ struct CheckCozyStreakIntent: AppIntent {
             let context = CozyModelContainer.shared.mainContext
             let prefs = CozyModelContainer.fetchOrCreatePreferences(in: context)
             let today = DateHelpers.logicalToday()
-            let occurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
+            let archiveCutoff = DateHelpers.addDays(-SmartScheduler.streakArchiveCutoffDays, to: today)
+            StreakAndBonusService.refreshHistoricalArchiveIfNeeded(
+                context: context,
+                preferences: prefs,
+                operationalCutoff: archiveCutoff,
+                today: today
+            )
+            let occurrences = CozyIntentDataHelper.fetchOperationalOccurrences(in: context, around: today)
 
             let snapshot = StreakAndBonusService.evaluate(
                 occurrences: occurrences,
                 persistedLongestStreak: prefs.longestRecordedStreak,
                 optionalBonusTasksEnabled: prefs.optionalBonusTasksEnabled,
+                historicalArchive: prefs.historicalStreakArchive,
                 today: today
             )
             if !prefs.streaksEnabled {

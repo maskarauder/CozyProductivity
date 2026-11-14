@@ -8,7 +8,7 @@ struct RootTabView: View {
     @Query(sort: \TaskTemplate.createdAt, order: .forward)
     private var templates: [TaskTemplate]
 
-    @Query(sort: \TaskOccurrence.scheduledDate, order: .forward)
+    @Query
     private var occurrences: [TaskOccurrence]
 
     @Query
@@ -25,6 +25,21 @@ struct RootTabView: View {
     @State private var currentLogicalDay: Date = DateHelpers.logicalToday()
 
     private let cupResetTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+
+    init() {
+        let cutoff = DateHelpers.addDays(
+            -SmartScheduler.operationalHistoryBufferDays,
+            to: DateHelpers.logicalToday()
+        )
+        let pendingRaw = OccurrenceStatus.pending.rawValue
+        _occurrences = Query(
+            filter: #Predicate<TaskOccurrence> { occ in
+                occ.statusRaw == pendingRaw || occ.scheduledDate >= cutoff
+            },
+            sort: \TaskOccurrence.scheduledDate,
+            order: .forward
+        )
+    }
 
     private var activePreferences: CozyPreferences {
         preferencesList.first ?? fallbackPreferences
@@ -168,32 +183,68 @@ struct RootTabView: View {
         }
     }
 
+    private func fetchOperationalOccurrences(around today: Date) -> [TaskOccurrence] {
+        let cutoff = DateHelpers.addDays(
+            -SmartScheduler.operationalHistoryBufferDays,
+            to: DateHelpers.startOfDay(for: today)
+        )
+        let pendingRaw = OccurrenceStatus.pending.rawValue
+        let descriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.statusRaw == pendingRaw || occ.scheduledDate >= cutoff
+            },
+            sortBy: [SortDescriptor(\TaskOccurrence.scheduledDate, order: .forward)]
+        )
+        return (try? modelContext.fetch(descriptor)) ?? occurrences
+    }
+
     private func refreshCalendarAndRebalance(using explicitPrefs: CozyPreferences? = nil) {
         let prefs = explicitPrefs ?? activePreferences
         let today = DateHelpers.logicalToday()
         currentLogicalDay = today
         let horizonEnd = DateHelpers.addDays(SmartScheduler.defaultHorizonDays - 1, to: today)
 
-        // Immediate synchronous local rebalance first so UI never waits on network I/O
-        let localAppleBusy: [Date: Int]
-        if prefs.useCalendarSync {
-            localAppleBusy = CalendarFreeTimeService.shared.busyMinutesByDay(
-                from: today,
-                to: horizonEnd,
-                wakingStartHour: prefs.wakingStartHour,
-                wakingEndHour: prefs.wakingEndHour
-            )
-        } else {
-            localAppleBusy = [:]
-        }
-        calendarBusyByDay = localAppleBusy
+        var initialBusyByDay: [Date: Int] = [:]
+        var canRunImmediateLocalRebalance = true
 
-        SmartScheduler.rebalance(
-            context: modelContext,
-            preferences: prefs,
-            calendarBusyByDay: localAppleBusy,
-            referenceDate: today
-        )
+        if prefs.useCalendarSync {
+            CalendarFreeTimeService.shared.refreshAuthorizationStatus()
+            if CalendarFreeTimeService.shared.hasReadAccess {
+                initialBusyByDay = CalendarFreeTimeService.shared.busyMinutesByDay(
+                    from: today,
+                    to: horizonEnd,
+                    wakingStartHour: prefs.wakingStartHour,
+                    wakingEndHour: prefs.wakingEndHour
+                )
+            } else {
+                canRunImmediateLocalRebalance = false
+            }
+        }
+
+        if prefs.useGoogleCalendarSync {
+            if let snapshot = prefs.cachedGoogleBusySnapshot {
+                for (dayKey, mins) in snapshot.busyMinutesByDayKey {
+                    if let day = DateHelpers.date(fromDayKey: dayKey),
+                       day >= today && day <= horizonEnd {
+                        initialBusyByDay[day] = max(initialBusyByDay[day] ?? 0, mins)
+                    }
+                }
+            } else if prefs.shouldAutoSyncCalendarsOnChange {
+                // Defer local rebalance until the async Google busy read succeeds (or reports failure)
+                canRunImmediateLocalRebalance = false
+            }
+        }
+
+        calendarBusyByDay = initialBusyByDay
+
+        if canRunImmediateLocalRebalance {
+            SmartScheduler.rebalance(
+                context: modelContext,
+                preferences: prefs,
+                calendarBusyByDay: initialBusyByDay,
+                referenceDate: today
+            )
+        }
 
         if prefs.shouldAutoSyncCalendarsOnChange {
             Task { @MainActor in
@@ -202,10 +253,12 @@ struct RootTabView: View {
                     preferences: prefs,
                     referenceDate: today
                 )
-                calendarBusyByDay = report.mergedBusyByDay
+                if !report.mergedBusyByDay.isEmpty || !prefs.hasAnyCalendarBusySyncEnabled {
+                    calendarBusyByDay = report.mergedBusyByDay
+                }
             }
         } else {
-            let latestOccurrences = (try? modelContext.fetch(FetchDescriptor<TaskOccurrence>())) ?? occurrences
+            let latestOccurrences = fetchOperationalOccurrences(around: today)
             Task { @MainActor in
                 await NotificationManager.shared.syncSummaryNotifications(
                     preferences: prefs,
@@ -218,7 +271,7 @@ struct RootTabView: View {
     private func syncNotifications(using explicitPrefs: CozyPreferences? = nil) {
         let prefs = explicitPrefs ?? activePreferences
         let logicalDay = DateHelpers.logicalToday()
-        let latestOccurrences = (try? modelContext.fetch(FetchDescriptor<TaskOccurrence>())) ?? occurrences
+        let latestOccurrences = fetchOperationalOccurrences(around: logicalDay)
         Task { @MainActor in
             await NotificationManager.shared.syncSummaryNotifications(
                 preferences: prefs,
@@ -230,7 +283,7 @@ struct RootTabView: View {
                     preferences: prefs,
                     referenceDate: logicalDay
                 )
-                if prefs.hasAnyCalendarBusySyncEnabled {
+                if prefs.hasAnyCalendarBusySyncEnabled && !report.mergedBusyByDay.isEmpty {
                     calendarBusyByDay = report.mergedBusyByDay
                 }
             }

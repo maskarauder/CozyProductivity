@@ -59,10 +59,23 @@ enum StreakAndBonusService {
         occurrences: [TaskOccurrence],
         persistedLongestStreak: Int = 0,
         optionalBonusTasksEnabled: Bool = true,
+        historicalArchive: CozyPreferences.HistoricalStreakArchive? = nil,
         today referenceDate: Date = Date(),
         calendar: Calendar = DateHelpers.calendar
     ) -> StreakSnapshot {
         let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
+
+        let validArchive: (archive: CozyPreferences.HistoricalStreakArchive, endDay: Date)? = {
+            guard let archive = historicalArchive,
+                  archive.optionalBonusTasksEnabled == optionalBonusTasksEnabled,
+                  let endDay = DateHelpers.date(fromDayKey: archive.archivedThroughDayKey, calendar: calendar),
+                  endDay < today else {
+                return nil
+            }
+            return (archive, endDay)
+        }()
+
+        let archiveCutoffEnd = validArchive?.endDay
 
         var baseTotalByDay: [Date: Int] = [:]
         var baseDoneByDay: [Date: Int] = [:]
@@ -70,19 +83,21 @@ enum StreakAndBonusService {
         var allTrackedDays: Set<Date> = []
 
         for occ in occurrences where occ.status != .skipped {
-            if let bonusDate = occ.bonusForDate {
-                let bDay = DateHelpers.startOfDay(for: bonusDate, calendar: calendar)
+            if let bDay = occ.bonusDay(calendar: calendar) {
                 if occ.isCompleted {
+                    if let archiveCutoffEnd, bDay <= archiveCutoffEnd { continue }
                     bonusDoneByDay[bDay, default: 0] += 1
                     allTrackedDays.insert(bDay)
                 } else if bDay >= today {
                     // Still pending as an optional bonus candidate today; it remains a future scheduled task
-                    let sDay = DateHelpers.startOfDay(for: occ.scheduledDate, calendar: calendar)
+                    let sDay = occ.scheduledDay(calendar: calendar)
+                    if let archiveCutoffEnd, sDay <= archiveCutoffEnd { continue }
                     baseTotalByDay[sDay, default: 0] += 1
                     allTrackedDays.insert(sDay)
                 }
             } else {
-                let sDay = DateHelpers.startOfDay(for: occ.scheduledDate, calendar: calendar)
+                let sDay = occ.scheduledDay(calendar: calendar)
+                if let archiveCutoffEnd, sDay <= archiveCutoffEnd { continue }
                 baseTotalByDay[sDay, default: 0] += 1
                 if occ.isCompleted {
                     baseDoneByDay[sDay, default: 0] += 1
@@ -92,9 +107,9 @@ enum StreakAndBonusService {
         }
 
         var summaries: [Date: DayAchievementSummary] = [:]
-        var bronzeCount = 0
-        var silverCount = 0
-        var goldCount = 0
+        var bronzeCount = validArchive?.archive.archivedBaseDays ?? 0
+        var silverCount = validArchive?.archive.archivedSilverDays ?? 0
+        var goldCount = validArchive?.archive.archivedGoldDays ?? 0
 
         for day in allTrackedDays {
             let summary = DayAchievementSummary(
@@ -116,20 +131,29 @@ enum StreakAndBonusService {
             }
         }
 
-        let pastAndTodayDays = allTrackedDays.filter { $0 <= today }
-        guard let earliestDay = pastAndTodayDays.min() else {
+        var runningStreak = validArchive?.archive.streakEnteringNextDay ?? 0
+        var bestStreak = max(
+            0,
+            max(persistedLongestStreak, validArchive?.archive.longestStreakThroughArchive ?? 0)
+        )
+
+        let scanStartDay: Date? = {
+            if let archiveEnd = archiveCutoffEnd {
+                return DateHelpers.addDays(1, to: archiveEnd, calendar: calendar)
+            }
+            return allTrackedDays.filter { $0 <= today }.min()
+        }()
+
+        guard let earliestDay = scanStartDay else {
             return StreakSnapshot(
                 daySummaries: summaries,
                 currentStreak: 0,
-                longestStreak: max(0, persistedLongestStreak),
+                longestStreak: bestStreak,
                 totalBronzeOrPinkDays: bronzeCount,
                 totalSilverDays: silverCount,
                 totalGoldDays: goldCount
             )
         }
-
-        var runningStreak = 0
-        var bestStreak = max(0, persistedLongestStreak)
 
         // Scan completed past days strictly before today
         let yesterday = DateHelpers.addDays(-1, to: today, calendar: calendar)
@@ -177,6 +201,120 @@ enum StreakAndBonusService {
         )
     }
 
+    // MARK: - Incremental Historical Streak Checkpoint
+
+    /// Summarizes immutable completed/missed history strictly before `operationalCutoff` at most once per day
+    /// so operational views only need to load recent + pending occurrences.
+    static func refreshHistoricalArchiveIfNeeded(
+        context: ModelContext,
+        preferences: CozyPreferences,
+        operationalCutoff: Date,
+        today referenceDate: Date = Date(),
+        calendar: Calendar = DateHelpers.calendar
+    ) {
+        let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
+        let cutoffStart = DateHelpers.startOfDay(for: operationalCutoff, calendar: calendar)
+        let archiveThroughDay = DateHelpers.addDays(-1, to: cutoffStart, calendar: calendar)
+        guard archiveThroughDay < today else { return }
+
+        let targetArchiveKey = DateHelpers.dayKeyString(for: archiveThroughDay, calendar: calendar)
+        let bonusEnabled = preferences.optionalBonusTasksEnabled
+
+        if let existing = preferences.historicalStreakArchive,
+           existing.archivedThroughDayKey == targetArchiveKey,
+           existing.optionalBonusTasksEnabled == bonusEnabled {
+            return
+        }
+
+        // Include an 8-day upper margin on `scheduledDate` so any bonus occurrence completed on `<= archiveThroughDay`
+        // (originally scheduled up to 7 days later) is captured accurately.
+        let upperFetchBound = DateHelpers.addDays(8, to: cutoffStart, calendar: calendar)
+        let skippedRaw = OccurrenceStatus.skipped.rawValue
+        let descriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.statusRaw != skippedRaw && occ.scheduledDate < upperFetchBound
+            }
+        )
+        let candidates = (try? context.fetch(descriptor)) ?? []
+
+        var baseTotalByDay: [Date: Int] = [:]
+        var baseDoneByDay: [Date: Int] = [:]
+        var bonusDoneByDay: [Date: Int] = [:]
+        var trackedDays: Set<Date> = []
+
+        for occ in candidates where occ.status != .skipped {
+            if let bDay = occ.bonusDay(calendar: calendar) {
+                if occ.isCompleted && bDay <= archiveThroughDay {
+                    bonusDoneByDay[bDay, default: 0] += 1
+                    trackedDays.insert(bDay)
+                }
+            } else {
+                let sDay = occ.scheduledDay(calendar: calendar)
+                if sDay <= archiveThroughDay {
+                    baseTotalByDay[sDay, default: 0] += 1
+                    if occ.isCompleted {
+                        baseDoneByDay[sDay, default: 0] += 1
+                    }
+                    trackedDays.insert(sDay)
+                }
+            }
+        }
+
+        var archivedBase = 0
+        var archivedSilver = 0
+        var archivedGold = 0
+        var summaries: [Date: DayAchievementSummary] = [:]
+
+        for day in trackedDays {
+            let summary = DayAchievementSummary(
+                date: day,
+                baseTotalCount: baseTotalByDay[day] ?? 0,
+                baseCompletedCount: baseDoneByDay[day] ?? 0,
+                bonusCompletedCount: bonusDoneByDay[day] ?? 0,
+                optionalBonusTasksEnabled: bonusEnabled
+            )
+            summaries[day] = summary
+            switch summary.tier {
+            case .none: break
+            case .base: archivedBase += 1
+            case .silver: archivedSilver += 1
+            case .gold: archivedGold += 1
+            }
+        }
+
+        var runningStreak = 0
+        var bestStreak = 0
+        if let earliest = trackedDays.min(), earliest <= archiveThroughDay {
+            let span = max(0, DateHelpers.daysBetween(earliest, and: archiveThroughDay, calendar: calendar))
+            for offset in 0...span {
+                let day = DateHelpers.addDays(offset, to: earliest, calendar: calendar)
+                guard let summary = summaries[day], summary.baseTotalCount > 0 else { continue }
+                switch summary.tier {
+                case .gold:
+                    runningStreak += 1
+                    bestStreak = max(bestStreak, runningStreak)
+                case .silver:
+                    break
+                case .base, .none:
+                    runningStreak = 0
+                }
+            }
+        }
+
+        preferences.historicalStreakArchive = CozyPreferences.HistoricalStreakArchive(
+            archivedThroughDayKey: targetArchiveKey,
+            streakEnteringNextDay: runningStreak,
+            longestStreakThroughArchive: bestStreak,
+            archivedGoldDays: archivedGold,
+            archivedSilverDays: archivedSilver,
+            archivedBaseDays: archivedBase,
+            optionalBonusTasksEnabled: bonusEnabled
+        )
+        if bestStreak > preferences.longestRecordedStreak {
+            preferences.longestRecordedStreak = bestStreak
+        }
+    }
+
     // MARK: - Two Optional Bonus Tasks Management (Selectable from Next 7 Days)
 
     /// Ensures that once all base tasks for `today` are completed, up to 2 upcoming tasks from `[tomorrow ... today + 7]`
@@ -193,10 +331,9 @@ enum StreakAndBonusService {
 
         // Clean up any stale pending bonus assignments from past days (or all pending bonus slots when disabled)
         for occ in occurrences where occ.status == .pending {
-            if let bDate = occ.bonusForDate {
-                if !bonusEnabled || DateHelpers.startOfDay(for: bDate, calendar: calendar) < today {
-                    occ.bonusForDate = nil
-                    occ.bonusSlot = 0
+            if let bDay = occ.bonusDay(calendar: calendar) {
+                if !bonusEnabled || bDay < today {
+                    occ.setBonusDay(nil, calendar: calendar)
                 }
             }
         }
@@ -204,17 +341,16 @@ enum StreakAndBonusService {
         if bonusEnabled {
             let baseToday = occurrences.filter {
                 $0.status != .skipped
-                    && $0.bonusForDate == nil
-                    && DateHelpers.isSameDay($0.scheduledDate, today, calendar: calendar)
+                    && $0.bonusDay(calendar: calendar) == nil
+                    && DateHelpers.isSameDay($0.scheduledDay(calendar: calendar), today, calendar: calendar)
             }
             let allBaseCompleted = !baseToday.isEmpty && baseToday.allSatisfy(\.isCompleted)
 
             if !allBaseCompleted {
                 // Hide/release uncompleted optional bonus slots until all base tasks are done
                 for occ in occurrences where occ.status == .pending {
-                    if let bDate = occ.bonusForDate, DateHelpers.isSameDay(bDate, today, calendar: calendar) {
-                        occ.bonusForDate = nil
-                        occ.bonusSlot = 0
+                    if let bDay = occ.bonusDay(calendar: calendar), DateHelpers.isSameDay(bDay, today, calendar: calendar) {
+                        occ.setBonusDay(nil, calendar: calendar)
                     }
                 }
             } else {
@@ -222,7 +358,7 @@ enum StreakAndBonusService {
                     let existingInSlot = occurrences.first {
                         $0.status != .skipped
                             && $0.bonusSlot == slot
-                            && ($0.bonusForDate.map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false)
+                            && ($0.bonusDay(calendar: calendar).map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false)
                     }
                     guard existingInSlot == nil else { continue }
 
@@ -230,7 +366,7 @@ enum StreakAndBonusService {
                     let otherTemplateID = occurrences.first {
                         $0.status != .skipped
                             && $0.bonusSlot == otherSlot
-                            && ($0.bonusForDate.map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false)
+                            && ($0.bonusDay(calendar: calendar).map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false)
                     }?.template?.id
 
                     let candidates = eligibleCandidatesForBonusSlot(
@@ -243,8 +379,7 @@ enum StreakAndBonusService {
                     // Prefer a distinct task template from the other bonus slot when available
                     let chosen = candidates.first { $0.template?.id != otherTemplateID } ?? candidates.first
                     if let chosen {
-                        chosen.bonusForDate = today
-                        chosen.bonusSlot = slot
+                        chosen.setBonusDay(today, slot: slot, calendar: calendar)
                     }
                 }
             }
@@ -255,6 +390,7 @@ enum StreakAndBonusService {
                 occurrences: occurrences,
                 persistedLongestStreak: preferences.longestRecordedStreak,
                 optionalBonusTasksEnabled: bonusEnabled,
+                historicalArchive: preferences.historicalStreakArchive,
                 today: today,
                 calendar: calendar
             )
@@ -280,23 +416,25 @@ enum StreakAndBonusService {
         return occurrences
             .filter { occ in
                 guard occ.status == .pending else { return false }
-                let sDay = DateHelpers.startOfDay(for: occ.scheduledDate, calendar: calendar)
+                let sDay = occ.scheduledDay(calendar: calendar)
                 guard sDay >= tomorrow && sDay <= maxDay else { return false }
 
-                if let bDate = occ.bonusForDate {
+                if let bDay = occ.bonusDay(calendar: calendar) {
                     // Allow the task already sitting in THIS slot, exclude the task in the OTHER slot
-                    return DateHelpers.isSameDay(bDate, today, calendar: calendar) && occ.bonusSlot == slot
+                    return DateHelpers.isSameDay(bDay, today, calendar: calendar) && occ.bonusSlot == slot
                 }
                 return true
             }
             .sorted { lhs, rhs in
-                let lhsFlexible = (lhs.template?.recurrence ?? .once) != .daily
-                let rhsFlexible = (rhs.template?.recurrence ?? .once) != .daily
+                let lhsFlexible = lhs.displayRecurrenceKind != .daily
+                let rhsFlexible = rhs.displayRecurrenceKind != .daily
                 if lhsFlexible != rhsFlexible {
                     return lhsFlexible && !rhsFlexible
                 }
-                if lhs.scheduledDate != rhs.scheduledDate {
-                    return lhs.scheduledDate < rhs.scheduledDate
+                let lhsDay = lhs.scheduledDay(calendar: calendar)
+                let rhsDay = rhs.scheduledDay(calendar: calendar)
+                if lhsDay != rhsDay {
+                    return lhsDay < rhsDay
                 }
                 if lhs.displayDurationMinutes != rhs.displayDurationMinutes {
                     return lhs.displayDurationMinutes < rhs.displayDurationMinutes
@@ -317,14 +455,12 @@ enum StreakAndBonusService {
 
         // Release any pending occurrence currently occupying this slot on today
         for occ in occurrences where occ.status == .pending && occ.bonusSlot == slot {
-            if let bDate = occ.bonusForDate, DateHelpers.isSameDay(bDate, today, calendar: calendar) {
-                occ.bonusForDate = nil
-                occ.bonusSlot = 0
+            if let bDay = occ.bonusDay(calendar: calendar), DateHelpers.isSameDay(bDay, today, calendar: calendar) {
+                occ.setBonusDay(nil, calendar: calendar)
             }
         }
 
-        newOccurrence.bonusForDate = today
-        newOccurrence.bonusSlot = slot
+        newOccurrence.setBonusDay(today, slot: slot, calendar: calendar)
         try? context.save()
     }
 }

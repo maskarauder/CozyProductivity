@@ -48,6 +48,7 @@ final class CelebrationController {
     private(set) var perfectOverlay: PerfectOverlayState?
     private(set) var hapticCounter: Int = 0
     private var dismissBannerTask: Task<Void, Never>?
+    private var cleanupParticlesTask: Task<Void, Never>?
 
     private static let cheers = [
         "Lovely job! 🌸",
@@ -73,7 +74,7 @@ final class CelebrationController {
                 wideSpread: allDoneForToday
             )
         } else {
-            particles.removeAll()
+            clearAllParticles()
         }
 
         perfectOverlay = nil
@@ -87,7 +88,7 @@ final class CelebrationController {
             let prefix = Self.cheers.randomElement() ?? "Lovely job! 🌸"
             bannerMessage = "\(prefix)  ·  \(taskTitle)"
         }
-        scheduleDismiss(after: 2.9)
+        scheduleBannerDismiss(after: 2.9)
     }
 
     func celebrateSilver(
@@ -105,7 +106,7 @@ final class CelebrationController {
                 wideSpread: true
             )
         } else {
-            particles.removeAll()
+            clearAllParticles()
         }
 
         perfectOverlay = nil
@@ -120,7 +121,7 @@ final class CelebrationController {
         } else {
             bannerMessage = "✨ Bonus task complete · \(taskTitle)"
         }
-        scheduleDismiss(after: 3.1)
+        scheduleBannerDismiss(after: 3.1)
     }
 
     func celebrateGoldPerfect(
@@ -137,7 +138,7 @@ final class CelebrationController {
                 wideSpread: true
             )
         } else {
-            particles.removeAll()
+            clearAllParticles()
         }
 
         if options.dayRanksEnabled {
@@ -148,7 +149,7 @@ final class CelebrationController {
                     showStreak: options.streaksEnabled
                 )
             }
-            scheduleDismiss(after: 3.6)
+            scheduleBannerDismiss(after: 3.6)
         } else {
             perfectOverlay = nil
             if options.addFriendlyMode {
@@ -160,8 +161,24 @@ final class CelebrationController {
             } else {
                 bannerMessage = nil
             }
-            scheduleDismiss(after: 2.9)
+            scheduleBannerDismiss(after: 2.9)
         }
+    }
+
+    /// Removes all particles whose staggered `createdAt + lifetime` has elapsed as of `referenceTime`.
+    func pruneExpiredParticles(at referenceTime: TimeInterval = Date.timeIntervalSinceReferenceDate) {
+        particles.removeAll { referenceTime >= ($0.createdAt + $0.lifetime) }
+    }
+
+    /// Returns the `timeIntervalSinceReferenceDate` when the final active particle will finish animating.
+    var latestParticleExpiry: TimeInterval? {
+        particles.map { $0.createdAt + $0.lifetime }.max()
+    }
+
+    private func clearAllParticles() {
+        cleanupParticlesTask?.cancel()
+        cleanupParticlesTask = nil
+        particles.removeAll()
     }
 
     private func spawnParticles(
@@ -214,10 +231,12 @@ final class CelebrationController {
             )
         }
 
-        particles = particles.filter { (now - $0.createdAt) < $0.lifetime } + newParticles
+        pruneExpiredParticles(at: now)
+        particles.append(contentsOf: newParticles)
+        scheduleParticleCleanup()
     }
 
-    private func scheduleDismiss(after seconds: Double) {
+    private func scheduleBannerDismiss(after seconds: Double) {
         dismissBannerTask?.cancel()
         dismissBannerTask = Task {
             try? await Task.sleep(for: .seconds(seconds))
@@ -226,8 +245,28 @@ final class CelebrationController {
                 bannerMessage = nil
                 perfectOverlay = nil
             }
-            let cleanupTime = Date.timeIntervalSinceReferenceDate
-            particles.removeAll { (cleanupTime - $0.createdAt) >= $0.lifetime }
+            pruneExpiredParticles()
+        }
+    }
+
+    private func scheduleParticleCleanup() {
+        cleanupParticlesTask?.cancel()
+        guard let finalExpiry = latestParticleExpiry else {
+            cleanupParticlesTask = nil
+            return
+        }
+        let now = Date.timeIntervalSinceReferenceDate
+        let delay = max(0.05, (finalExpiry - now) + 0.08)
+
+        cleanupParticlesTask = Task {
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            pruneExpiredParticles()
+            if !particles.isEmpty {
+                scheduleParticleCleanup()
+            } else {
+                cleanupParticlesTask = nil
+            }
         }
     }
 }
