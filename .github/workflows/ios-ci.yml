@@ -55,3 +55,19 @@ jobs:
             -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
             CODE_SIGNING_ALLOWED=NO \
             COMPILER_INDEX_STORE_ENABLE=NO
+
+      - name: Verify Release Archive (generic/platform=iOS)
+        run: |
+          ARCHIVE_PATH="${RUNNER_TEMP}/CozyProductivity-CI.xcarchive"
+          xcodebuild archive \
+            -project CozyProductivity.xcodeproj \
+            -scheme CozyProductivity \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "${ARCHIVE_PATH}" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO
+          test -d "${ARCHIVE_PATH}/Products/Applications/CozyProductivity.app"
+          test -f "${ARCHIVE_PATH}/Products/Applications/CozyProductivity.app/PrivacyInfo.xcprivacy"
+          rm -rf "${ARCHIVE_PATH}"
