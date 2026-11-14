@@ -17,12 +17,12 @@ struct ScheduleOverviewView: View {
     }
 
     @State private var activeSection: SectionTab = .timeline
-    @State private var selectedDay: Date = DateHelpers.startOfDay(for: Date())
+    @State private var selectedDay: Date = DateHelpers.logicalToday()
     @State private var showingNewTaskSheet = false
     @State private var editingTemplate: TaskTemplate?
 
     private var today: Date {
-        DateHelpers.startOfDay(for: Date())
+        DateHelpers.logicalToday()
     }
 
     private var fourteenDaySummaries: [DayCapacitySummary] {
@@ -57,22 +57,28 @@ struct ScheduleOverviewView: View {
                 let effectiveDate = occ.isCompleted ? (occ.bonusForDate ?? occ.scheduledDate) : occ.scheduledDate
                 return DateHelpers.isSameDay(effectiveDate, selectedSummary.date)
             }
-            .sorted { $0.displayDurationMinutes > $1.displayDurationMinutes }
+            .sorted { $0.effectiveLoadMinutes > $1.effectiveLoadMinutes }
+    }
+
+    private var isADDFriendly: Bool {
+        preferences.addFriendlyMode
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: isADDFriendly ? 14 : 18) {
                     // Header
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("Smart Schedule")
+                            Text(isADDFriendly ? "Schedule" : "Smart Schedule")
                                 .font(.system(.title2, design: .rounded, weight: .bold))
                                 .foregroundStyle(CozyTheme.inkPrimary)
-                            Text("Tasks flow naturally to days with more free time")
-                                .font(.footnote)
-                                .foregroundStyle(CozyTheme.inkSecondary)
+                            if !isADDFriendly {
+                                Text("Tasks flow naturally to days with more free time")
+                                    .font(.footnote)
+                                    .foregroundStyle(CozyTheme.inkSecondary)
+                            }
                         }
                         Spacer()
                         Button {
@@ -134,12 +140,15 @@ struct ScheduleOverviewView: View {
             .cozyScreenBackground()
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showingNewTaskSheet) {
-                TaskEditorSheet {
+                TaskEditorSheet(addFriendlyMode: isADDFriendly) {
                     onRebalanceRequested()
                 }
             }
             .sheet(item: $editingTemplate) { template in
-                TaskEditorSheet(existingTemplate: template) {
+                TaskEditorSheet(
+                    existingTemplate: template,
+                    addFriendlyMode: isADDFriendly
+                ) {
                     onRebalanceRequested()
                 }
             }
@@ -154,13 +163,15 @@ struct ScheduleOverviewView: View {
         return VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Label("Next 14 Days Free-Time Load", systemImage: "chart.bar.fill")
+                    Label(isADDFriendly ? "Next 14 Days" : "Next 14 Days Free-Time Load", systemImage: "chart.bar.fill")
                         .font(.system(.subheadline, design: .rounded, weight: .bold))
                         .foregroundStyle(CozyTheme.deepRose)
                     Spacer()
-                    Text("Tap a day")
-                        .font(.caption)
-                        .foregroundStyle(CozyTheme.inkMuted)
+                    if !isADDFriendly {
+                        Text("Tap a day")
+                            .font(.caption)
+                            .foregroundStyle(CozyTheme.inkMuted)
+                    }
                 }
 
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -230,9 +241,11 @@ struct ScheduleOverviewView: View {
                     .padding(.vertical, 4)
                 }
 
-                HStack(spacing: 14) {
-                    legendDot(color: CozyTheme.roseAccent, label: "Scheduled tasks")
-                    legendDot(color: CozyTheme.petalPill, label: "Available free budget")
+                if !isADDFriendly {
+                    HStack(spacing: 14) {
+                        legendDot(color: CozyTheme.roseAccent, label: "Scheduled tasks")
+                        legendDot(color: CozyTheme.petalPill, label: "Available free budget")
+                    }
                 }
             }
             .padding(18)
@@ -242,15 +255,26 @@ struct ScheduleOverviewView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(DateHelpers.fullHeaderDateString(for: selectedSummary.date))
+                        Text(isADDFriendly ? DateHelpers.shortMonthDayString(for: selectedSummary.date) : DateHelpers.fullHeaderDateString(for: selectedSummary.date))
                             .font(.system(.headline, design: .rounded, weight: .bold))
                             .foregroundStyle(CozyTheme.inkPrimary)
-                        Text("\(DateHelpers.formatDuration(minutes: selectedSummary.scheduledMinutes)) scheduled · \(DateHelpers.formatDuration(minutes: selectedSummary.remainingFreeMinutes)) free time left")
-                            .font(.caption)
-                            .foregroundStyle(CozyTheme.inkSecondary)
+                        Text(
+                            isADDFriendly
+                                ? "\(DateHelpers.formatDuration(minutes: selectedSummary.remainingFreeMinutes)) free"
+                                : "\(DateHelpers.formatDuration(minutes: selectedSummary.scheduledMinutes)) weighted load · \(DateHelpers.formatDuration(minutes: selectedSummary.remainingFreeMinutes)) free capacity left"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(CozyTheme.inkSecondary)
                     }
                     Spacer()
-                    if selectedSummary.calendarBusyMinutes > 0 {
+                    if let cupHours = selectedSummary.activeCupHours {
+                        Text(isADDFriendly ? "\(cupHours)h" : "\(cupHours == 0 ? "🫖" : "🍵") Cup \(cupHours)h")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(CozyTheme.deepRose)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(CozyTheme.softBlushFill))
+                    } else if selectedSummary.calendarBusyMinutes > 0 {
                         Label("\(DateHelpers.formatDuration(minutes: selectedSummary.calendarBusyMinutes)) cal", systemImage: "calendar")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(CozyTheme.deepRose)
@@ -261,39 +285,78 @@ struct ScheduleOverviewView: View {
                 }
 
                 if occurrencesOnSelectedDay.isEmpty {
-                    Text("No tasks scheduled on this day 🌸")
-                        .font(.subheadline)
-                        .foregroundStyle(CozyTheme.inkSecondary)
-                        .padding(.vertical, 12)
+                    Text(
+                        isADDFriendly
+                            ? "No tasks"
+                            : (selectedSummary.activeCupHours == 0
+                                ? "Cup is resting at 0 hours today — tasks moved back a day 🌸"
+                                : "No tasks scheduled on this day 🌸")
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(CozyTheme.inkSecondary)
+                    .padding(.vertical, 12)
                 } else {
                     ForEach(occurrencesOnSelectedDay) { occ in
-                        HStack(spacing: 12) {
-                            Text(occ.displayEmoji)
-                                .font(.title3)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(occ.displayTitle)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(occ.isCompleted ? CozyTheme.inkMuted : CozyTheme.inkPrimary)
-                                    .strikethrough(occ.isCompleted)
-                                Text("\(occ.recurrenceLabel) · \(DateHelpers.formatDuration(minutes: occ.displayDurationMinutes))")
-                                    .font(.caption)
-                                    .foregroundStyle(CozyTheme.inkSecondary)
+                        let weight = occ.displayWeight
+                        let deadline = occ.effectiveHardDeadline()
+
+                        Button {
+                            if let template = occ.template {
+                                editingTemplate = template
                             }
-                            Spacer()
-                            if occ.isCompleted {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(CozyTheme.roseAccent)
-                            } else if occ.template?.isAutoScheduled == true {
-                                Image(systemName: "wand.and.stars")
-                                    .font(.caption)
-                                    .foregroundStyle(CozyTheme.deepRose)
+                        } label: {
+                            HStack(spacing: 12) {
+                                if !isADDFriendly {
+                                    Text(occ.displayEmoji)
+                                        .font(.title3)
+                                }
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(occ.displayTitle)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(occ.isCompleted ? CozyTheme.inkMuted : CozyTheme.inkPrimary)
+                                        .strikethrough(occ.isCompleted)
+                                    HStack(spacing: 6) {
+                                        Text("\(occ.recurrenceLabel) · \(DateHelpers.formatDuration(minutes: occ.displayDurationMinutes))")
+                                            .font(.caption)
+                                            .foregroundStyle(CozyTheme.inkSecondary)
+
+                                        if !isADDFriendly || weight != .light {
+                                            Text(isADDFriendly ? weight.title : "\(weight.emoji) \(weight.badgeLabel)")
+                                                .font(.caption2.weight(.semibold))
+                                                .foregroundStyle(weight.pillForeground)
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(Capsule().fill(weight.pillBackground))
+                                        }
+                                    }
+                                    if let deadline {
+                                        Text(isADDFriendly ? "Due \(DateHelpers.shortMonthDayString(for: deadline))" : "📌 Hard Deadline: \(DateHelpers.shortMonthDayString(for: deadline))")
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(CozyTheme.deepRose)
+                                    }
+                                }
+                                Spacer()
+                                if occ.isCompleted {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(CozyTheme.roseAccent)
+                                } else if occ.template?.isAutoScheduled == true {
+                                    Image(systemName: "wand.and.stars")
+                                        .font(.caption)
+                                        .foregroundStyle(CozyTheme.deepRose)
+                                }
+                                if occ.template != nil {
+                                    Image(systemName: "pencil")
+                                        .font(.caption)
+                                        .foregroundStyle(CozyTheme.inkMuted)
+                                }
                             }
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(CozyTheme.canvasMiddle)
+                            )
                         }
-                        .padding(12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(CozyTheme.canvasMiddle)
-                        )
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -308,28 +371,37 @@ struct ScheduleOverviewView: View {
         VStack(alignment: .leading, spacing: 12) {
             if templates.isEmpty {
                 VStack(spacing: 10) {
-                    Text("🎀")
-                        .font(.largeTitle)
+                    if !isADDFriendly {
+                        Text("🎀")
+                            .font(.largeTitle)
+                    }
                     Text("No tasks yet")
                         .font(.headline)
                         .foregroundStyle(CozyTheme.inkPrimary)
-                    Text("Tap + to add once, daily, weekly, or monthly tasks.")
-                        .font(.subheadline)
-                        .foregroundStyle(CozyTheme.inkSecondary)
+                    if !isADDFriendly {
+                        Text("Tap + to add once, daily, weekly, or monthly tasks.")
+                            .font(.subheadline)
+                            .foregroundStyle(CozyTheme.inkSecondary)
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(28)
                 .cozyCard()
             } else {
                 ForEach(templates) { template in
+                    let weight = template.weight
+                    let deadline = template.normalizedHardDeadline()
+
                     HStack(spacing: 12) {
-                        Text(template.emoji)
-                            .font(.title2)
-                            .frame(width: 44, height: 44)
-                            .background(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill(CozyTheme.softBlushFill)
-                            )
+                        if !isADDFriendly {
+                            Text(template.emoji)
+                                .font(.title2)
+                                .frame(width: 44, height: 44)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .fill(CozyTheme.softBlushFill)
+                                )
+                        }
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text(template.title)
@@ -348,10 +420,28 @@ struct ScheduleOverviewView: View {
                                     .font(.caption2.weight(.medium))
                                     .foregroundStyle(CozyTheme.deepRose)
 
-                                if template.isAutoScheduled && template.recurrence != .daily {
-                                    Label("Auto", systemImage: "wand.and.stars")
-                                        .font(.caption2.weight(.medium))
-                                        .foregroundStyle(CozyTheme.inkSecondary)
+                                if !isADDFriendly || weight != .light {
+                                    Text(isADDFriendly ? weight.title : "\(weight.emoji) \(weight.badgeLabel)")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(weight.pillForeground)
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 3)
+                                        .background(Capsule().fill(weight.pillBackground))
+                                }
+                            }
+
+                            if deadline != nil || (!isADDFriendly && template.isAutoScheduled && template.recurrence != .daily) {
+                                HStack(spacing: 8) {
+                                    if let deadline {
+                                        Text(isADDFriendly ? "Due \(DateHelpers.shortMonthDayString(for: deadline))" : "📌 Hard Deadline: \(DateHelpers.shortMonthDayString(for: deadline))")
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(CozyTheme.deepRose)
+                                    }
+                                    if !isADDFriendly && template.isAutoScheduled && template.recurrence != .daily {
+                                        Label("Auto", systemImage: "wand.and.stars")
+                                            .font(.caption2.weight(.medium))
+                                            .foregroundStyle(CozyTheme.inkSecondary)
+                                    }
                                 }
                             }
                         }

@@ -103,6 +103,79 @@ final class CalendarFreeTimeService {
         return Self.mergeBusyIntervalsByDay([intervalsByDay])
     }
 
+    // MARK: - Apple Calendar Target Selection & Two-Way Task Sync
+
+    /// Returns writable non-Google Apple / iCloud / local calendars on the iPhone (falling back to all writable calendars if needed).
+    func writableAppleCalendars() -> [EKCalendar] {
+        refreshAuthorizationStatus()
+        guard hasReadAccess else { return [] }
+        let googleIDs = Set(googleAccountCalendars().map(\.calendarIdentifier))
+        let allWritable = eventStore.calendars(for: .event).filter { $0.allowsContentModifications }
+        let nonGoogleWritable = allWritable.filter { !googleIDs.contains($0.calendarIdentifier) }
+        return nonGoogleWritable.isEmpty ? allWritable : nonGoogleWritable
+    }
+
+    func targetAppleCalendar(
+        preferredIdentifier: String,
+        avoidCalendarIdentifier: String? = nil
+    ) -> EKCalendar? {
+        refreshAuthorizationStatus()
+        guard hasReadAccess else { return nil }
+
+        let allWritable = eventStore.calendars(for: .event).filter {
+            $0.allowsContentModifications && $0.calendarIdentifier != avoidCalendarIdentifier
+        }
+        let trimmedPref = preferredIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPref.isEmpty,
+           let chosen = allWritable.first(where: { $0.calendarIdentifier == trimmedPref }) {
+            return chosen
+        }
+
+        let googleIDs = Set(googleAccountCalendars().map(\.calendarIdentifier))
+        if let defaultCal = eventStore.defaultCalendarForNewEvents,
+           defaultCal.allowsContentModifications,
+           defaultCal.calendarIdentifier != avoidCalendarIdentifier,
+           !googleIDs.contains(defaultCal.calendarIdentifier) {
+            return defaultCal
+        }
+
+        if let firstNonGoogle = allWritable.first(where: { !googleIDs.contains($0.calendarIdentifier) }) {
+            return firstNonGoogle
+        }
+
+        return allWritable.first
+    }
+
+    func syncOccurrencesToAppleCalendar(
+        occurrences: [TaskOccurrence],
+        busyIntervalsByDay: [Date: [(Date, Date)]],
+        preferences: CozyPreferences,
+        today referenceDate: Date = Date(),
+        avoidCalendarIdentifier: String? = nil,
+        calendar: Calendar = DateHelpers.calendar
+    ) -> (upserted: Int, removed: Int, calendarTitle: String?) {
+        guard let targetCalendar = targetAppleCalendar(
+            preferredIdentifier: preferences.appleTargetCalendarIdentifier,
+            avoidCalendarIdentifier: avoidCalendarIdentifier
+        ) else {
+            return (0, 0, nil)
+        }
+
+        let synced = syncOccurrencesToEKCalendar(
+            targetCalendar: targetCalendar,
+            occurrences: occurrences,
+            busyIntervalsByDay: busyIntervalsByDay,
+            preferences: preferences,
+            today: referenceDate,
+            calendar: calendar,
+            getEventID: { $0.appleCalendarEventIdentifier },
+            setEventID: { $0.appleCalendarEventIdentifier = $1 },
+            getSignature: { $0.lastAppleCalendarSyncSignature },
+            setSignature: { $0.lastAppleCalendarSyncSignature = $1 }
+        )
+        return (synced.upserted, synced.removed, targetCalendar.title)
+    }
+
     // MARK: - Zero-Config iPhone Google Account Bridge (EventKit Google Source)
 
     /// Returns Google / Gmail calendars connected in iPhone Settings -> Calendar -> Accounts.
@@ -161,40 +234,100 @@ final class CalendarFreeTimeService {
             return (0, 0, nil)
         }
 
+        let synced = syncOccurrencesToEKCalendar(
+            targetCalendar: targetCalendar,
+            occurrences: occurrences,
+            busyIntervalsByDay: busyIntervalsByDay,
+            preferences: preferences,
+            today: referenceDate,
+            calendar: calendar,
+            getEventID: { $0.syncedEKEventIdentifier },
+            setEventID: { $0.syncedEKEventIdentifier = $1 },
+            getSignature: { $0.lastCalendarSyncSignature },
+            setSignature: { $0.lastCalendarSyncSignature = $1 }
+        )
+        return (synced.upserted, synced.removed, targetCalendar.title)
+    }
+
+    private func syncOccurrencesToEKCalendar(
+        targetCalendar: EKCalendar,
+        occurrences: [TaskOccurrence],
+        busyIntervalsByDay: [Date: [(Date, Date)]],
+        preferences: CozyPreferences,
+        today referenceDate: Date,
+        calendar: Calendar,
+        getEventID: (TaskOccurrence) -> String?,
+        setEventID: (TaskOccurrence, String?) -> Void,
+        getSignature: (TaskOccurrence) -> String?,
+        setSignature: (TaskOccurrence, String?) -> Void
+    ) -> (upserted: Int, removed: Int) {
         let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
-        let pushEnd = DateHelpers.addDays(14, to: today, calendar: calendar)
+        let minSyncDay = DateHelpers.addDays(-1, to: today, calendar: calendar)
+        let maxSyncDay = DateHelpers.addDays(14, to: today, calendar: calendar)
+        let queryEnd = calendar.date(byAdding: .day, value: 1, to: maxSyncDay) ?? maxSyncDay.addingTimeInterval(86400)
 
         var upserted = 0
         var removed = 0
+        var removedEventIDs: Set<String> = []
         var placedByDay: [Date: [(Date, Date)]] = busyIntervalsByDay
 
-        let sortedOccurrences = occurrences.sorted {
-            if $0.scheduledDate != $1.scheduledDate {
-                return $0.scheduledDate < $1.scheduledDate
-            }
-            return $0.displayTitle < $1.displayTitle
-        }
-
-        for occ in sortedOccurrences {
-            if occ.status == .skipped {
-                if let eventID = occ.syncedEKEventIdentifier,
-                   let existing = eventStore.event(withIdentifier: eventID) {
-                    try? eventStore.remove(existing, span: .thisEvent, commit: false)
-                    removed += 1
-                }
-                occ.syncedEKEventIdentifier = nil
-                occ.lastCalendarSyncSignature = nil
-                continue
-            }
-
-            let effectiveDay = DateHelpers.startOfDay(
+        func effectiveOccurrenceDay(_ occ: TaskOccurrence) -> Date {
+            DateHelpers.startOfDay(
                 for: occ.isCompleted ? (occ.bonusForDate ?? occ.scheduledDate) : occ.scheduledDate,
                 calendar: calendar
             )
-            guard effectiveDay >= DateHelpers.addDays(-1, to: today, calendar: calendar) && effectiveDay <= pushEnd else {
-                continue
+        }
+
+        let activeWindowOccurrences = occurrences
+            .filter { occ in
+                guard occ.status != .skipped else { return false }
+                let day = effectiveOccurrenceDay(occ)
+                return day >= minSyncDay && day <= maxSyncDay
+            }
+            .sorted {
+                let d0 = effectiveOccurrenceDay($0)
+                let d1 = effectiveOccurrenceDay($1)
+                if d0 != d1 { return d0 < d1 }
+                if $0.displayTitle != $1.displayTitle { return $0.displayTitle < $1.displayTitle }
+                return $0.id.uuidString < $1.id.uuidString
             }
 
+        let activeIDs = Set(activeWindowOccurrences.map(\.id))
+
+        // 1. Scan existing Cozy-managed events on targetCalendar so deleted/deactivated/moved tasks are removed cleanly
+        var existingByOccID: [UUID: EKEvent] = [:]
+        let predicate = eventStore.predicateForEvents(withStart: minSyncDay, end: queryEnd, calendars: [targetCalendar])
+        for event in eventStore.events(matching: predicate) where Self.isCozyManagedEvent(event) {
+            if let occID = Self.extractCozyOccurrenceID(fromURL: event.url), activeIDs.contains(occID) {
+                existingByOccID[occID] = event
+            } else {
+                if let eid = event.eventIdentifier {
+                    removedEventIDs.insert(eid)
+                }
+                if (try? eventStore.remove(event, span: .thisEvent, commit: false)) != nil {
+                    removed += 1
+                }
+            }
+        }
+
+        // 2. Clean up tracked identifiers on skipped or out-of-window occurrences
+        for occ in occurrences where !activeIDs.contains(occ.id) {
+            if let savedID = getEventID(occ) {
+                if !removedEventIDs.contains(savedID),
+                   let staleEvent = eventStore.event(withIdentifier: savedID) {
+                    removedEventIDs.insert(savedID)
+                    if (try? eventStore.remove(staleEvent, span: .thisEvent, commit: false)) != nil {
+                        removed += 1
+                    }
+                }
+                setEventID(occ, nil)
+                setSignature(occ, nil)
+            }
+        }
+
+        // 3. Upsert active occurrences in open slots on targetCalendar
+        for occ in activeWindowOccurrences {
+            let effectiveDay = effectiveOccurrenceDay(occ)
             let slot = Self.assignSlotForTask(
                 on: effectiveDay,
                 durationMinutes: occ.displayDurationMinutes,
@@ -206,27 +339,48 @@ final class CalendarFreeTimeService {
             )
             placedByDay[effectiveDay, default: []].append(slot)
 
-            let event: EKEvent
-            if let existingID = occ.syncedEKEventIdentifier,
-               let fetched = eventStore.event(withIdentifier: existingID) {
-                event = fetched
-            } else {
-                event = EKEvent(eventStore: eventStore)
-                event.calendar = targetCalendar
-            }
-
-            event.title = occ.isCompleted
+            let desiredTitle = occ.isCompleted
                 ? "✅ \(occ.displayEmoji) \(occ.displayTitle)"
                 : "\(occ.displayEmoji) \(occ.displayTitle)"
+            let notesHeader = occ.displayNotes.isEmpty ? "" : "\(occ.displayNotes)\n\n"
+            let deadlineNote = occ.effectiveHardDeadline(calendar: calendar).map {
+                " · Hard Deadline \(DateHelpers.shortMonthDayString(for: $0, calendar: calendar))"
+            } ?? ""
+            let desiredNotes = "\(notesHeader)Scheduled by Cozy (\(occ.recurrenceLabel) · \(occ.displayWeight.badgeLabel)\(deadlineNote)) \(Self.cozyEventMarker)"
+            let signature = Self.buildCalendarSyncSignature(
+                calendarID: targetCalendar.calendarIdentifier,
+                start: slot.0,
+                end: slot.1,
+                title: desiredTitle,
+                notes: desiredNotes
+            )
+
+            let matchedExisting: EKEvent? = {
+                if let savedID = getEventID(occ), let fetched = eventStore.event(withIdentifier: savedID) {
+                    return fetched
+                }
+                return existingByOccID[occ.id]
+            }()
+
+            if let existing = matchedExisting,
+               existing.calendar.calendarIdentifier == targetCalendar.calendarIdentifier,
+               getSignature(occ) == signature {
+                setEventID(occ, existing.eventIdentifier)
+                continue
+            }
+
+            let event = matchedExisting ?? EKEvent(eventStore: eventStore)
+            event.calendar = targetCalendar
+            event.title = desiredTitle
             event.startDate = slot.0
             event.endDate = slot.1
             event.url = URL(string: "\(Self.cozyURLScheme)://occurrence/\(occ.id.uuidString)")
-            let notesHeader = occ.displayNotes.isEmpty ? "" : "\(occ.displayNotes)\n\n"
-            event.notes = "\(notesHeader)Scheduled by Cozy Tasks (\(occ.recurrenceLabel)) \(Self.cozyEventMarker)"
+            event.notes = desiredNotes
 
             do {
                 try eventStore.save(event, span: .thisEvent, commit: false)
-                occ.syncedEKEventIdentifier = event.eventIdentifier
+                setEventID(occ, event.eventIdentifier)
+                setSignature(occ, signature)
                 upserted += 1
             } catch {
                 continue
@@ -237,7 +391,7 @@ final class CalendarFreeTimeService {
             try? eventStore.commit()
         }
 
-        return (upserted, removed, targetCalendar.title)
+        return (upserted, removed)
     }
 
     // MARK: - Pure Testable Interval Merging & Slot Placement Helpers
@@ -250,6 +404,21 @@ final class CalendarFreeTimeService {
             return true
         }
         return false
+    }
+
+    nonisolated static func extractCozyOccurrenceID(fromURL url: URL?) -> UUID? {
+        guard let url, url.scheme?.lowercased() == cozyURLScheme else { return nil }
+        return UUID(uuidString: url.lastPathComponent)
+    }
+
+    nonisolated static func buildCalendarSyncSignature(
+        calendarID: String,
+        start: Date,
+        end: Date,
+        title: String,
+        notes: String
+    ) -> String {
+        "\(calendarID)|\(Int(start.timeIntervalSince1970))|\(Int(end.timeIntervalSince1970))|\(title)|\(notes)"
     }
 
     nonisolated static func clipIntervalsToDays(

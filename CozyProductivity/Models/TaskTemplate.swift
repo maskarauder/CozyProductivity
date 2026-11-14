@@ -10,8 +10,15 @@ final class TaskTemplate {
     var categoryRaw: String
     var recurrenceRaw: String
 
-    /// Estimated duration of the task in minutes (e.g., 15, 30, 45, 60).
+    /// Estimated clock duration of the task in minutes (e.g., 15, 30, 45, 60).
     var durationMinutes: Int
+
+    /// Task effort weight ("light" = +0m, "normal" = +30m, "heavy" = +60m added to ranking/cup load).
+    var weightRaw: String = TaskWeight.light.rawValue
+
+    /// Optional hard deadline: forces the task to appear on or before `hardDeadlineDate` even if the daily cup lacks hours.
+    var hasHardDeadline: Bool = false
+    var hardDeadlineDate: Date? = nil
 
     /// Used when recurrence == .customDays (minimum 2).
     var customIntervalDays: Int
@@ -19,7 +26,7 @@ final class TaskTemplate {
     /// When true, SmartScheduler places occurrences onto days with the most remaining free time.
     var isAutoScheduled: Bool
 
-    /// Optional anchor or deadline date (used for pinned dates or flexible once target windows).
+    /// Optional anchor date (used for pinned dates or flexible once target windows).
     var anchorDate: Date
 
     /// Optional target window length in days for flexible once tasks (default 7 days).
@@ -37,8 +44,11 @@ final class TaskTemplate {
         notes: String = "",
         emoji: String = "🌸",
         category: TaskCategory = .selfCare,
-        recurrence: RecurrenceKind = .weekly,
+        recurrence: RecurrenceKind = .once,
         durationMinutes: Int = 30,
+        weight: TaskWeight = .light,
+        hasHardDeadline: Bool = false,
+        hardDeadlineDate: Date? = nil,
         customIntervalDays: Int = 3,
         isAutoScheduled: Bool = true,
         anchorDate: Date = Date(),
@@ -53,6 +63,9 @@ final class TaskTemplate {
         self.categoryRaw = category.rawValue
         self.recurrenceRaw = recurrence.rawValue
         self.durationMinutes = max(5, durationMinutes)
+        self.weightRaw = weight.rawValue
+        self.hasHardDeadline = hasHardDeadline
+        self.hardDeadlineDate = hardDeadlineDate.map { DateHelpers.startOfDay(for: $0) }
         self.customIntervalDays = max(2, customIntervalDays)
         self.isAutoScheduled = recurrence == .daily ? false : isAutoScheduled
         self.anchorDate = DateHelpers.startOfDay(for: anchorDate)
@@ -69,6 +82,21 @@ final class TaskTemplate {
     var recurrence: RecurrenceKind {
         get { RecurrenceKind(rawValue: recurrenceRaw) ?? .once }
         set { recurrenceRaw = newValue.rawValue }
+    }
+
+    var weight: TaskWeight {
+        get { TaskWeight(rawValue: weightRaw) ?? .light }
+        set { weightRaw = newValue.rawValue }
+    }
+
+    /// Combined minutes used for ranking & daily cup balancing (`durationMinutes` + weight bonus).
+    var effectiveLoadMinutes: Int {
+        durationMinutes + weight.extraRankingMinutes
+    }
+
+    func normalizedHardDeadline(calendar: Calendar = DateHelpers.calendar) -> Date? {
+        guard hasHardDeadline, let raw = hardDeadlineDate else { return nil }
+        return DateHelpers.startOfDay(for: raw, calendar: calendar)
     }
 
     var recurrenceDisplayLabel: String {

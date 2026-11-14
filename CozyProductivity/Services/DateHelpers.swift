@@ -8,8 +8,25 @@ enum DateHelpers {
         return cal
     }
 
+    static let cupResetHour = 4
+
     static func startOfDay(for date: Date, calendar: Calendar = DateHelpers.calendar) -> Date {
         calendar.startOfDay(for: date)
+    }
+
+    /// Returns the start-of-day Date for the active "Cozy Day", resetting at 4:00 AM local time
+    /// (so 12:00 AM – 3:59 AM belongs to the previous day's cup, and 4:00 AM starts a new cup day).
+    static func logicalToday(
+        now: Date = Date(),
+        resetHour: Int = cupResetHour,
+        calendar: Calendar = DateHelpers.calendar
+    ) -> Date {
+        let hour = calendar.component(.hour, from: now)
+        let rawDay = startOfDay(for: now, calendar: calendar)
+        if hour < resetHour {
+            return addDays(-1, to: rawDay, calendar: calendar)
+        }
+        return rawDay
     }
 
     static func addDays(_ days: Int, to date: Date, calendar: Calendar = DateHelpers.calendar) -> Date {
@@ -33,6 +50,12 @@ enum DateHelpers {
         let m = comps.month ?? 1
         let d = comps.day ?? 1
         return String(format: "%04d-%02d-%02d", y, m, d)
+    }
+
+    static func shortMonthDayString(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d"
+        return formatter.string(from: date)
     }
 
     // MARK: - Recurrence Period Bounds

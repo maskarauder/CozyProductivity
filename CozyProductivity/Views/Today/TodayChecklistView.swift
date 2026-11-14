@@ -17,11 +17,12 @@ struct TodayChecklistView: View {
     }
 
     @State private var showingNewTaskSheet = false
+    @State private var showingCupPromptSheet = false
     @State private var editingTemplate: TaskTemplate?
     @State private var pickingBonusSlot: BonusSlotSelection?
 
     private var today: Date {
-        DateHelpers.startOfDay(for: Date())
+        DateHelpers.logicalToday()
     }
 
     private var baseTodaysOccurrences: [TaskOccurrence] {
@@ -35,8 +36,13 @@ struct TodayChecklistView: View {
                 if lhs.isCompleted != rhs.isCompleted {
                     return !lhs.isCompleted
                 }
-                if lhs.displayDurationMinutes != rhs.displayDurationMinutes {
-                    return lhs.displayDurationMinutes < rhs.displayDurationMinutes
+                let lhsUrgent = (lhs.effectiveHardDeadline() ?? .distantFuture) <= today
+                let rhsUrgent = (rhs.effectiveHardDeadline() ?? .distantFuture) <= today
+                if lhsUrgent != rhsUrgent {
+                    return lhsUrgent && !rhsUrgent
+                }
+                if lhs.effectiveLoadMinutes != rhs.effectiveLoadMinutes {
+                    return lhs.effectiveLoadMinutes < rhs.effectiveLoadMinutes
                 }
                 return lhs.displayTitle < rhs.displayTitle
             }
@@ -66,12 +72,17 @@ struct TodayChecklistView: View {
         StreakAndBonusService.evaluate(
             occurrences: occurrences,
             persistedLongestStreak: preferences.longestRecordedStreak,
+            optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled,
             today: today
         )
     }
 
     private var todayTier: DayCompletionTier {
         streakSnapshot.tier(for: today)
+    }
+
+    private var isADDFriendly: Bool {
+        preferences.addFriendlyMode
     }
 
     private var todaySummary: DayCapacitySummary {
@@ -97,7 +108,7 @@ struct TodayChecklistView: View {
         NavigationStack {
             ZStack(alignment: .bottomTrailing) {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: isADDFriendly ? 14 : 20) {
                         headerSection
 
                         progressSummaryCard
@@ -106,10 +117,12 @@ struct TodayChecklistView: View {
                             emptyTodayCard
                         } else {
                             if !pendingBaseToday.isEmpty {
-                                VStack(alignment: .leading, spacing: 14) {
-                                    Text("Today's Checklist")
-                                        .font(.system(.subheadline, design: .rounded, weight: .bold))
-                                        .foregroundStyle(CozyTheme.deepRose)
+                                VStack(alignment: .leading, spacing: isADDFriendly ? 10 : 14) {
+                                    if !isADDFriendly {
+                                        Text("Today's Checklist")
+                                            .font(.system(.subheadline, design: .rounded, weight: .bold))
+                                            .foregroundStyle(CozyTheme.deepRose)
+                                    }
 
                                     ForEach(pendingBaseToday) { occ in
                                         checklistCard(for: occ)
@@ -117,18 +130,20 @@ struct TodayChecklistView: View {
                                 }
                             }
 
-                            if allBaseCompletedToday {
+                            if allBaseCompletedToday && preferences.optionalBonusTasksEnabled {
                                 bonusTasksSection
                                     .transition(.move(edge: .top).combined(with: .opacity))
                             }
 
                             if !completedBaseToday.isEmpty {
-                                VStack(alignment: .leading, spacing: 14) {
+                                VStack(alignment: .leading, spacing: isADDFriendly ? 10 : 14) {
                                     HStack(spacing: 6) {
-                                        Image(systemName: "heart.fill")
-                                            .font(.caption)
-                                            .foregroundStyle(CozyTheme.roseAccent)
-                                        Text("Completed Today (\(completedBaseToday.count))")
+                                        if !isADDFriendly {
+                                            Image(systemName: "heart.fill")
+                                                .font(.caption)
+                                                .foregroundStyle(CozyTheme.roseAccent)
+                                        }
+                                        Text(isADDFriendly ? "Done (\(completedBaseToday.count))" : "Completed Today (\(completedBaseToday.count))")
                                             .font(.system(.subheadline, design: .rounded, weight: .bold))
                                             .foregroundStyle(CozyTheme.inkSecondary)
                                     }
@@ -155,7 +170,7 @@ struct TodayChecklistView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "plus")
                             .font(.system(size: 16, weight: .bold))
-                        Text("New Task")
+                        Text(isADDFriendly ? "Task" : "New Task")
                             .font(.system(.subheadline, design: .rounded, weight: .bold))
                     }
                     .foregroundStyle(.white)
@@ -173,12 +188,23 @@ struct TodayChecklistView: View {
             .cozyScreenBackground()
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showingNewTaskSheet) {
-                TaskEditorSheet {
+                TaskEditorSheet(addFriendlyMode: isADDFriendly) {
+                    onRebalanceRequested()
+                }
+            }
+            .sheet(isPresented: $showingCupPromptSheet) {
+                DailyCupPromptSheet(
+                    preferences: preferences,
+                    logicalToday: today
+                ) {
                     onRebalanceRequested()
                 }
             }
             .sheet(item: $editingTemplate) { template in
-                TaskEditorSheet(existingTemplate: template) {
+                TaskEditorSheet(
+                    existingTemplate: template,
+                    addFriendlyMode: isADDFriendly
+                ) {
                     onRebalanceRequested()
                 }
             }
@@ -191,23 +217,25 @@ struct TodayChecklistView: View {
     // MARK: - Header & Progress Card
 
     private var headerSection: some View {
-        HStack(alignment: .top) {
+        let activeCup = preferences.cupHours(for: today)
+
+        return HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(DateHelpers.cozyGreeting())
+                Text(isADDFriendly ? "Today" : DateHelpers.cozyGreeting())
                     .font(.system(.title2, design: .rounded, weight: .bold))
                     .foregroundStyle(CozyTheme.inkPrimary)
 
                 HStack(spacing: 8) {
-                    Text(DateHelpers.fullHeaderDateString(for: today))
+                    Text(isADDFriendly ? DateHelpers.shortMonthDayString(for: today) : DateHelpers.fullHeaderDateString(for: today))
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(CozyTheme.inkSecondary)
 
-                    if streakSnapshot.currentStreak > 0 || streakSnapshot.longestStreak > 0 {
+                    if preferences.streaksEnabled && (streakSnapshot.currentStreak > 0 || streakSnapshot.longestStreak > 0) {
                         HStack(spacing: 4) {
                             Image(systemName: "flame.fill")
                                 .font(.caption2)
                                 .foregroundStyle(CozyTheme.goldBorder)
-                            Text("Streak \(streakSnapshot.currentStreak)d")
+                            Text(isADDFriendly ? "\(streakSnapshot.currentStreak)d" : "Streak \(streakSnapshot.currentStreak)d")
                                 .font(.caption.weight(.bold))
                                 .foregroundStyle(CozyTheme.inkPrimary)
                         }
@@ -218,29 +246,61 @@ struct TodayChecklistView: View {
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 6)
 
-            Button {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                    onRebalanceRequested()
+            HStack(spacing: 6) {
+                if preferences.dailyCupPromptEnabled || activeCup != nil {
+                    Button {
+                        showingCupPromptSheet = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            if !isADDFriendly {
+                                Text(activeCup == 0 ? "🫖" : "🍵")
+                                    .font(.caption)
+                            }
+                            Text(activeCup.map { isADDFriendly ? "\($0)h" : "Cup \($0)h" } ?? (isADDFriendly ? "Cup" : "Set Cup"))
+                                .font(.caption.weight(.bold))
+                        }
+                        .foregroundStyle(CozyTheme.deepRose)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(CozyTheme.softBlushFill)
+                        )
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .strokeBorder(CozyTheme.cardBorder, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("How full is your cup today")
                 }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "wand.and.stars")
-                        .font(.caption.weight(.bold))
-                    Text("Balance")
-                        .font(.caption.weight(.bold))
+
+                Button {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                        onRebalanceRequested()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "wand.and.stars")
+                            .font(.caption.weight(.bold))
+                        if !isADDFriendly {
+                            Text("Balance")
+                                .font(.caption.weight(.bold))
+                        }
+                    }
+                    .foregroundStyle(CozyTheme.deepRose)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(CozyTheme.petalPill)
+                    )
                 }
-                .foregroundStyle(CozyTheme.deepRose)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(CozyTheme.petalPill)
-                )
+                .buttonStyle(.plain)
+                .accessibilityLabel("Rebalance flexible tasks across free days")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Rebalance flexible tasks across free days")
         }
     }
 
@@ -249,14 +309,17 @@ struct TodayChecklistView: View {
         let doneCount = completedBaseToday.count
         let progress = totalCount > 0 ? Double(doneCount) / Double(totalCount) : 0.0
         let remainingTaskMinutes = pendingBaseToday.reduce(0) { $0 + $1.displayDurationMinutes }
+        let remainingLoadMinutes = pendingBaseToday.reduce(0) { $0 + $1.effectiveLoadMinutes }
         let baseStyle = preferences.baseHighlightStyle
+        let activeCup = preferences.cupHours(for: today)
+        let showRanks = preferences.dayRanksEnabled
 
         return HStack(spacing: 18) {
-            // Circular Pastel / Medal Progress Ring
+            // Circular Pastel / Optional Medal Progress Ring
             ZStack {
                 Circle()
                     .stroke(CozyTheme.petalPill, lineWidth: 9)
-                    .frame(width: 68, height: 68)
+                    .frame(width: isADDFriendly ? 56 : 68, height: isADDFriendly ? 56 : 68)
 
                 Circle()
                     .trim(from: 0, to: progress)
@@ -265,31 +328,36 @@ struct TodayChecklistView: View {
                         style: StrokeStyle(lineWidth: 9, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
-                    .frame(width: 68, height: 68)
+                    .frame(width: isADDFriendly ? 56 : 68, height: isADDFriendly ? 56 : 68)
                     .animation(.spring(response: 0.5, dampingFraction: 0.8), value: progress)
 
                 VStack(spacing: 0) {
-                    if todayTier != .none {
+                    if showRanks && todayTier != .none {
                         Text(todayTier.medalEmoji)
+                            .font(.title3)
+                    } else if activeCup == 0 && totalCount == 0 && !isADDFriendly {
+                        Text("🫖")
                             .font(.title3)
                     } else {
                         Text("\(doneCount)/\(totalCount)")
                             .font(.system(.subheadline, design: .rounded, weight: .bold))
                             .foregroundStyle(CozyTheme.inkPrimary)
-                        Text("done")
-                            .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .foregroundStyle(CozyTheme.inkSecondary)
+                        if !isADDFriendly {
+                            Text("done")
+                                .font(.system(size: 10, weight: .medium, design: .rounded))
+                                .foregroundStyle(CozyTheme.inkSecondary)
+                        }
                     }
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
-                    Text(statusHeadline(total: totalCount, done: doneCount))
+                    Text(statusHeadline(total: totalCount, done: doneCount, activeCup: activeCup))
                         .font(.system(.headline, design: .rounded, weight: .bold))
                         .foregroundStyle(CozyTheme.inkPrimary)
 
-                    if todayTier != .none {
+                    if showRanks && todayTier != .none && !isADDFriendly {
                         Text(todayTier.badgeTitle(baseStyle: baseStyle))
                             .font(.system(size: 10, weight: .bold, design: .rounded))
                             .foregroundStyle(todayTier.inkColor(baseStyle: baseStyle))
@@ -304,15 +372,19 @@ struct TodayChecklistView: View {
                     }
                 }
 
-                Text(
-                    remainingTaskMinutes > 0
-                        ? "\(DateHelpers.formatDuration(minutes: remainingTaskMinutes)) left on checklist · \(DateHelpers.formatDuration(minutes: todaySummary.remainingFreeMinutes)) extra free budget"
-                        : "All daily tasks done! · Current streak: \(streakSnapshot.currentStreak)d (Best: \(streakSnapshot.longestStreak)d)"
+                let detail = summaryDetailLine(
+                    totalCount: totalCount,
+                    remainingTaskMinutes: remainingTaskMinutes,
+                    remainingLoadMinutes: remainingLoadMinutes,
+                    activeCup: activeCup
                 )
-                .font(.caption)
-                .foregroundStyle(CozyTheme.inkSecondary)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(CozyTheme.inkSecondary)
+                }
 
-                if preferences.hasAnyCalendarBusySyncEnabled && todaySummary.calendarBusyMinutes > 0 {
+                if !isADDFriendly && preferences.hasAnyCalendarBusySyncEnabled && todaySummary.calendarBusyMinutes > 0 {
                     let calSourceLabel: String = {
                         if preferences.useCalendarSync && preferences.useGoogleCalendarSync {
                             return "Apple + Google Calendar"
@@ -333,7 +405,7 @@ struct TodayChecklistView: View {
 
             Spacer(minLength: 0)
         }
-        .padding(18)
+        .padding(isADDFriendly ? 14 : 18)
         .background(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .fill(summaryBackgroundGradient(baseStyle: baseStyle))
@@ -341,8 +413,8 @@ struct TodayChecklistView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(
-                    todayTier == .none ? CozyTheme.cardBorder : todayTier.borderColor(baseStyle: baseStyle),
-                    lineWidth: todayTier == .none ? 1 : 1.5
+                    (!showRanks || todayTier == .none) ? CozyTheme.cardBorder : todayTier.borderColor(baseStyle: baseStyle),
+                    lineWidth: (!showRanks || todayTier == .none) ? 1 : 1.5
                 )
         )
         .shadow(color: CozyTheme.roseAccent.opacity(0.10), radius: 14, x: 0, y: 6)
@@ -351,20 +423,36 @@ struct TodayChecklistView: View {
     // MARK: - Two Optional Bonus Tasks Section (Next 7 Days)
 
     private var bonusTasksSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let showRanks = preferences.dayRanksEnabled
+
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Label("Optional Bonus Tasks", systemImage: "sparkles")
+                Label(isADDFriendly ? "Bonus Tasks" : "Optional Bonus Tasks", systemImage: "sparkles")
                     .font(.system(.subheadline, design: .rounded, weight: .bold))
                     .foregroundStyle(CozyTheme.deepRose)
                 Spacer()
-                Text("From next 7 days")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(CozyTheme.inkSecondary)
+                if !isADDFriendly {
+                    Text("From next 7 days")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(CozyTheme.inkSecondary)
+                }
             }
 
-            Text("1 bonus task highlights today in Silver (preserves streak). Complete both for Gold PERFECT (+1 streak)!")
-                .font(.caption)
-                .foregroundStyle(CozyTheme.inkSecondary)
+            if !isADDFriendly {
+                if showRanks && preferences.streaksEnabled {
+                    Text("1 bonus task highlights today in Silver (preserves streak). Complete both for Gold PERFECT (+1 streak)!")
+                        .font(.caption)
+                        .foregroundStyle(CozyTheme.inkSecondary)
+                } else if showRanks {
+                    Text("1 bonus task highlights today in Silver. Complete both for Gold PERFECT!")
+                        .font(.caption)
+                        .foregroundStyle(CozyTheme.inkSecondary)
+                } else {
+                    Text("Pull up to 2 extra tasks forward from the next 7 days.")
+                        .font(.caption)
+                        .foregroundStyle(CozyTheme.inkSecondary)
+                }
+            }
 
             ForEach([1, 2], id: \.self) { slot in
                 bonusSlotCard(slot: slot)
@@ -378,9 +466,9 @@ struct TodayChecklistView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(
-                    todayTier == .gold
+                    showRanks && todayTier == .gold
                         ? CozyTheme.goldBorder
-                        : (todayTier == .silver ? CozyTheme.silverBorder : CozyTheme.cardBorder),
+                        : (showRanks && todayTier == .silver ? CozyTheme.silverBorder : CozyTheme.cardBorder),
                     lineWidth: 1.3
                 )
         )
@@ -394,7 +482,13 @@ struct TodayChecklistView: View {
             occurrences: occurrences,
             today: today
         )
-        let tierBadgeLabel = slot == 1 ? "Bonus 1 · 🥈 Silver" : "Bonus 2 · 🥇 Gold"
+        let showRanks = preferences.dayRanksEnabled
+        let tierBadgeLabel: String = {
+            if showRanks && !isADDFriendly {
+                return slot == 1 ? "Bonus 1 · 🥈 Silver" : "Bonus 2 · 🥇 Gold"
+            }
+            return "Bonus \(slot)"
+        }()
 
         if let occ = assigned {
             HStack(spacing: 12) {
@@ -405,14 +499,16 @@ struct TodayChecklistView: View {
                         Circle()
                             .fill(
                                 occ.isCompleted
-                                    ? AnyShapeStyle(todayTier == .gold ? CozyTheme.goldGradient : CozyTheme.silverGradient)
+                                    ? (showRanks
+                                        ? AnyShapeStyle(todayTier == .gold ? CozyTheme.goldGradient : CozyTheme.silverGradient)
+                                        : AnyShapeStyle(CozyTheme.primaryButtonGradient))
                                     : AnyShapeStyle(CozyTheme.softBlushFill)
                             )
                             .frame(width: 34, height: 34)
                             .overlay(
                                 Circle().strokeBorder(
                                     occ.isCompleted
-                                        ? (todayTier == .gold ? CozyTheme.goldBorder : CozyTheme.silverBorder)
+                                        ? (showRanks ? (todayTier == .gold ? CozyTheme.goldBorder : CozyTheme.silverBorder) : CozyTheme.roseAccent)
                                         : CozyTheme.roseAccent.opacity(0.65),
                                     lineWidth: 2
                                 )
@@ -421,7 +517,7 @@ struct TodayChecklistView: View {
                         if occ.isCompleted {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(todayTier == .gold ? CozyTheme.goldInk : CozyTheme.silverInk)
+                                .foregroundStyle(showRanks ? (todayTier == .gold ? CozyTheme.goldInk : CozyTheme.silverInk) : .white)
                         }
                     }
                     .frame(width: 40, height: 40)
@@ -430,7 +526,9 @@ struct TodayChecklistView: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        Text(occ.displayEmoji)
+                        if !isADDFriendly {
+                            Text(occ.displayEmoji)
+                        }
                         Text(occ.displayTitle)
                             .font(.system(.subheadline, design: .rounded, weight: .semibold))
                             .foregroundStyle(occ.isCompleted ? CozyTheme.inkMuted : CozyTheme.inkPrimary)
@@ -441,11 +539,15 @@ struct TodayChecklistView: View {
                     HStack(spacing: 6) {
                         Text(tierBadgeLabel)
                             .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundStyle(slot == 2 ? CozyTheme.goldInk : CozyTheme.silverInk)
+                            .foregroundStyle(showRanks ? (slot == 2 ? CozyTheme.goldInk : CozyTheme.silverInk) : CozyTheme.deepRose)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
                             .background(
-                                Capsule().fill(slot == 2 ? CozyTheme.goldGradient : CozyTheme.silverGradient)
+                                Capsule().fill(
+                                    showRanks
+                                        ? AnyShapeStyle(slot == 2 ? CozyTheme.goldGradient : CozyTheme.silverGradient)
+                                        : AnyShapeStyle(CozyTheme.petalPill)
+                                )
                             )
 
                         Text("\(DateHelpers.shortWeekdayName(for: occ.scheduledDate)) · \(DateHelpers.formatDuration(minutes: occ.displayDurationMinutes))")
@@ -462,7 +564,9 @@ struct TodayChecklistView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "arrow.triangle.2.circlepath")
-                            Text("Swap")
+                            if !isADDFriendly {
+                                Text("Swap")
+                            }
                         }
                         .font(.caption.weight(.bold))
                         .foregroundStyle(CozyTheme.deepRose)
@@ -493,12 +597,14 @@ struct TodayChecklistView: View {
                         .foregroundStyle(CozyTheme.roseAccent)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(candidates.isEmpty ? "No more upcoming tasks in next 7 days" : "Choose \(tierBadgeLabel) Task")
+                        Text(candidates.isEmpty ? (isADDFriendly ? "No upcoming tasks" : "No more upcoming tasks in next 7 days") : "Choose \(tierBadgeLabel)")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(CozyTheme.inkPrimary)
-                        Text(candidates.isEmpty ? "Tap to add an upcoming task to unlock this bonus slot" : "Select from \(candidates.count) upcoming tasks in the next 7 days")
-                            .font(.caption)
-                            .foregroundStyle(CozyTheme.inkSecondary)
+                        if !isADDFriendly {
+                            Text(candidates.isEmpty ? "Tap to add an upcoming task" : "Select from \(candidates.count) upcoming tasks")
+                                .font(.caption)
+                                .foregroundStyle(CozyTheme.inkSecondary)
+                        }
                     }
 
                     Spacer()
@@ -524,13 +630,15 @@ struct TodayChecklistView: View {
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Pick any task scheduled within the next 7 days for Optional Bonus Slot \(slot):")
-                        .font(.footnote)
-                        .foregroundStyle(CozyTheme.inkSecondary)
-                        .padding(.horizontal, 4)
+                    if !isADDFriendly {
+                        Text("Pick any task scheduled within the next 7 days for Bonus Slot \(slot):")
+                            .font(.footnote)
+                            .foregroundStyle(CozyTheme.inkSecondary)
+                            .padding(.horizontal, 4)
+                    }
 
                     if candidates.isEmpty {
-                        Text("No uncompleted tasks are scheduled in the next 7 days yet 🌸")
+                        Text(isADDFriendly ? "No upcoming tasks." : "No uncompleted tasks are scheduled in the next 7 days yet 🌸")
                             .font(.subheadline)
                             .foregroundStyle(CozyTheme.inkSecondary)
                             .padding(.vertical, 24)
@@ -546,16 +654,19 @@ struct TodayChecklistView: View {
                                     context: modelContext,
                                     today: today
                                 )
+                                onNotificationsSyncRequested()
                                 pickingBonusSlot = nil
                             } label: {
                                 HStack(spacing: 12) {
-                                    Text(candidate.displayEmoji)
-                                        .font(.title3)
+                                    if !isADDFriendly {
+                                        Text(candidate.displayEmoji)
+                                            .font(.title3)
+                                    }
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(candidate.displayTitle)
                                             .font(.subheadline.weight(.semibold))
                                             .foregroundStyle(CozyTheme.inkPrimary)
-                                        Text("\(DateHelpers.fullHeaderDateString(for: candidate.scheduledDate)) · \(DateHelpers.formatDuration(minutes: candidate.displayDurationMinutes)) · \(candidate.recurrenceLabel)")
+                                        Text("\(DateHelpers.shortMonthDayString(for: candidate.scheduledDate)) · \(DateHelpers.formatDuration(minutes: candidate.displayDurationMinutes))")
                                             .font(.caption)
                                             .foregroundStyle(CozyTheme.inkSecondary)
                                     }
@@ -582,7 +693,7 @@ struct TodayChecklistView: View {
                 .padding(18)
             }
             .cozyScreenBackground()
-            .navigationTitle("Bonus Task \(slot) (Next 7 Days)")
+            .navigationTitle("Bonus \(slot)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -601,8 +712,13 @@ struct TodayChecklistView: View {
     private func checklistCard(for occurrence: TaskOccurrence) -> some View {
         TaskChecklistCardView(
             occurrence: occurrence,
+            today: today,
+            addFriendlyMode: isADDFriendly,
             onToggleComplete: {
                 toggleCompletion(for: occurrence)
+            },
+            onAdjustWeight: { newWeight in
+                adjustWeight(for: occurrence, to: newWeight, updateTemplate: true)
             },
             onEditTemplate: {
                 editingTemplate = occurrence.template
@@ -625,23 +741,59 @@ struct TodayChecklistView: View {
     }
 
     private var emptyTodayCard: some View {
-        VStack(spacing: 12) {
-            Text("🌷")
-                .font(.system(size: 42))
-            Text("Your day is wide open & calm")
-                .font(.system(.headline, design: .rounded, weight: .bold))
-                .foregroundStyle(CozyTheme.inkPrimary)
-            Text("Add recurring or once tasks and CozyProductivity will automatically place them on days with the most free time.")
+        let isEmptyCupDay = preferences.cupHours(for: today) == 0
+
+        return VStack(spacing: isADDFriendly ? 6 : 12) {
+            if !isADDFriendly {
+                Text(isEmptyCupDay ? "🫖" : "🌷")
+                    .font(.system(size: 42))
+            }
+            Text(
+                isADDFriendly
+                    ? (isEmptyCupDay ? "0 hours today" : "No tasks today")
+                    : (isEmptyCupDay ? "Your cup is resting at 0 hours today" : "Your day is wide open & calm")
+            )
+            .font(.system(.headline, design: .rounded, weight: .bold))
+            .foregroundStyle(CozyTheme.inkPrimary)
+            .multilineTextAlignment(.center)
+
+            if !isADDFriendly {
+                Text(
+                    isEmptyCupDay
+                        ? "Tasks without a hard deadline moved back a day so you can gently recharge. Tap your Cup badge above anytime if your energy shifts 🌸"
+                        : "Add recurring or once tasks and Cozy will automatically place them on days with the most free time."
+                )
                 .font(.subheadline)
                 .foregroundStyle(CozyTheme.inkSecondary)
                 .multilineTextAlignment(.center)
+            }
         }
         .frame(maxWidth: .infinity)
-        .padding(28)
+        .padding(isADDFriendly ? 20 : 28)
         .cozyCard()
     }
 
     // MARK: - Actions & Styling Helpers
+
+    private func adjustWeight(
+        for occurrence: TaskOccurrence,
+        to newWeight: TaskWeight,
+        updateTemplate: Bool
+    ) {
+        let previousWeight = occurrence.displayWeight
+        occurrence.applyWeightAdjustment(newWeight, updateTemplate: updateTemplate)
+        try? modelContext.save()
+
+        if previousWeight != newWeight {
+            onRebalanceRequested()
+            StreakAndBonusService.syncBonusSlots(
+                context: modelContext,
+                occurrences: occurrences,
+                preferences: preferences,
+                today: today
+            )
+        }
+    }
 
     private func toggleCompletion(for occurrence: TaskOccurrence) {
         let previousTier = streakSnapshot.tier(for: today)
@@ -659,27 +811,41 @@ struct TodayChecklistView: View {
         let updatedSnapshot = StreakAndBonusService.evaluate(
             occurrences: occurrences,
             persistedLongestStreak: preferences.longestRecordedStreak,
+            optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled,
             today: today
         )
         let newTier = updatedSnapshot.tier(for: today)
+        let celebrationOptions = CelebrationController.Options(
+            confettiEnabled: preferences.confettiEnabled,
+            streaksEnabled: preferences.streaksEnabled,
+            dayRanksEnabled: preferences.dayRanksEnabled,
+            optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled,
+            addFriendlyMode: preferences.addFriendlyMode
+        )
 
         if becomingCompleted {
             if newTier == .gold && previousTier < .gold {
-                celebration.celebrateGoldPerfect(streakDays: updatedSnapshot.currentStreak)
+                celebration.celebrateGoldPerfect(
+                    streakDays: updatedSnapshot.currentStreak,
+                    options: celebrationOptions
+                )
             } else if newTier == .silver && previousTier < .silver {
                 celebration.celebrateSilver(
                     taskTitle: occurrence.displayTitle,
-                    streakDays: updatedSnapshot.currentStreak
+                    streakDays: updatedSnapshot.currentStreak,
+                    options: celebrationOptions
                 )
             } else if newTier == .base && previousTier < .base {
                 celebration.celebrate(
                     taskTitle: occurrence.displayTitle,
-                    allDoneForToday: true
+                    allDoneForToday: true,
+                    options: celebrationOptions
                 )
             } else {
                 celebration.celebrate(
                     taskTitle: occurrence.displayTitle,
-                    allDoneForToday: false
+                    allDoneForToday: false,
+                    options: celebrationOptions
                 )
             }
         }
@@ -713,9 +879,23 @@ struct TodayChecklistView: View {
         onRebalanceRequested()
     }
 
-    private func statusHeadline(total: Int, done: Int) -> String {
+    private func statusHeadline(total: Int, done: Int, activeCup: Int?) -> String {
+        if isADDFriendly {
+            if total == 0 {
+                return activeCup == 0 ? "0 hours today" : "Open day"
+            }
+            let remaining = max(0, total - done)
+            return remaining == 0 ? "All done" : "\(remaining) left"
+        }
+
         if total == 0 {
+            if activeCup == 0 {
+                return "Empty cup rest day 🫖"
+            }
             return "Peaceful & unhurried ✨"
+        }
+        if !preferences.dayRanksEnabled {
+            return done >= total ? "Daily Checklist Complete! 🌸" : (done == 0 ? "A gentle start awaits 🌸" : "Warm momentum going 🌷")
         }
         switch todayTier {
         case .gold:
@@ -729,7 +909,48 @@ struct TodayChecklistView: View {
         }
     }
 
+    private func summaryDetailLine(
+        totalCount: Int,
+        remainingTaskMinutes: Int,
+        remainingLoadMinutes: Int,
+        activeCup: Int?
+    ) -> String {
+        if isADDFriendly {
+            if totalCount == 0 { return "" }
+            if remainingTaskMinutes > 0 {
+                return "\(DateHelpers.formatDuration(minutes: remainingTaskMinutes)) left"
+            }
+            return preferences.streaksEnabled ? "Streak \(streakSnapshot.currentStreak)d" : ""
+        }
+
+        if totalCount == 0 && activeCup == 0 {
+            if preferences.streaksEnabled {
+                return "Cup is 0h · Tasks moved back a day (streak safe at \(streakSnapshot.currentStreak)d)"
+            }
+            return "Cup is 0h · Tasks moved back a day"
+        }
+        if remainingTaskMinutes > 0 {
+            let cupSuffix: String
+            if let hrs = activeCup {
+                cupSuffix = "\(DateHelpers.formatDuration(minutes: todaySummary.remainingFreeMinutes)) left in \(hrs)h cup"
+            } else {
+                cupSuffix = "\(DateHelpers.formatDuration(minutes: todaySummary.remainingFreeMinutes)) extra free budget"
+            }
+            if remainingLoadMinutes != remainingTaskMinutes {
+                return "\(DateHelpers.formatDuration(minutes: remainingTaskMinutes)) tasks (\(DateHelpers.formatDuration(minutes: remainingLoadMinutes)) w/ weight) · \(cupSuffix)"
+            }
+            return "\(DateHelpers.formatDuration(minutes: remainingTaskMinutes)) left on checklist · \(cupSuffix)"
+        }
+        if preferences.streaksEnabled {
+            return "All daily tasks done! · Current streak: \(streakSnapshot.currentStreak)d (Best: \(streakSnapshot.longestStreak)d)"
+        }
+        return "All daily tasks done!"
+    }
+
     private func ringGradient(baseStyle: BaseHighlightColorStyle) -> LinearGradient {
+        guard preferences.dayRanksEnabled else {
+            return CozyTheme.primaryButtonGradient
+        }
         switch todayTier {
         case .gold: return CozyTheme.goldGradient
         case .silver: return CozyTheme.silverGradient
@@ -739,6 +960,9 @@ struct TodayChecklistView: View {
     }
 
     private func summaryBackgroundGradient(baseStyle: BaseHighlightColorStyle) -> LinearGradient {
+        guard preferences.dayRanksEnabled else {
+            return CozyTheme.headerCardGradient
+        }
         switch todayTier {
         case .gold:
             return LinearGradient(

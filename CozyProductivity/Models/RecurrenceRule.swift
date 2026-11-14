@@ -109,6 +109,71 @@ enum OccurrenceStatus: String, Codable {
     case skipped
 }
 
+enum TaskWeight: String, Codable, CaseIterable, Identifiable {
+    case light
+    case normal
+    case heavy
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .light: return "Light"
+        case .normal: return "Normal"
+        case .heavy: return "Heavy"
+        }
+    }
+
+    /// Extra minutes added to SmartScheduler ranking & daily cup load.
+    var extraRankingMinutes: Int {
+        switch self {
+        case .light: return 0
+        case .normal: return 30
+        case .heavy: return 60
+        }
+    }
+
+    var badgeLabel: String {
+        switch self {
+        case .light: return "Light"
+        case .normal: return "Normal +30m"
+        case .heavy: return "Heavy +1h"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .light: return "+0m ranking weight"
+        case .normal: return "+30m ranking weight"
+        case .heavy: return "+1h ranking weight"
+        }
+    }
+
+    var emoji: String {
+        switch self {
+        case .light: return "🪶"
+        case .normal: return "☕"
+        case .heavy: return "🏋️"
+        }
+    }
+
+    var pillBackground: Color {
+        switch self {
+        case .light: return CozyTheme.pastelMint
+        case .normal: return CozyTheme.pastelButter
+        case .heavy: return CozyTheme.pastelPeach
+        }
+    }
+
+    var pillForeground: Color {
+        switch self {
+        case .light: return CozyTheme.pastelMintInk
+        case .normal: return CozyTheme.pastelButterInk
+        case .heavy: return CozyTheme.pastelPeachInk
+        }
+    }
+}
+
 enum CalendarDeductionMode: String, Codable, CaseIterable, Identifiable {
     case subtractFromBudget
     case capByUnbookedWakingHours

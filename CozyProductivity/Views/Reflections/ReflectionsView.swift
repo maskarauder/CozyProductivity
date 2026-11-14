@@ -13,28 +13,34 @@ struct ReflectionsView: View {
     @State private var selectedScope: DigestScope = .daily
 
     private var activeDigest: AccomplishmentDigest {
-        let now = Date()
+        let logical = DateHelpers.logicalToday()
         switch selectedScope {
         case .daily:
-            return SummaryBuilder.dailyDigest(for: now, occurrences: occurrences)
+            return SummaryBuilder.dailyDigest(for: logical, occurrences: occurrences)
         case .weekly:
-            return SummaryBuilder.weeklyDigest(containing: now, occurrences: occurrences)
+            return SummaryBuilder.weeklyDigest(containing: logical, occurrences: occurrences)
         case .monthly:
-            return SummaryBuilder.monthlyDigest(containing: now, occurrences: occurrences)
+            return SummaryBuilder.monthlyDigest(containing: logical, occurrences: occurrences)
         }
+    }
+
+    private var isADDFriendly: Bool {
+        preferences.addFriendlyMode
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: isADDFriendly ? 14 : 18) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Cozy Reflections")
+                        Text(isADDFriendly ? "Summaries" : "Cozy Reflections")
                             .font(.system(.title2, design: .rounded, weight: .bold))
                             .foregroundStyle(CozyTheme.inkPrimary)
-                        Text("Celebrate everything you've gently checked off")
-                            .font(.footnote)
-                            .foregroundStyle(CozyTheme.inkSecondary)
+                        if !isADDFriendly {
+                            Text("Celebrate everything you've gently checked off")
+                                .font(.footnote)
+                                .foregroundStyle(CozyTheme.inkSecondary)
+                        }
                     }
 
                     // Scope Picker
@@ -76,8 +82,10 @@ struct ReflectionsView: View {
                                 .padding(.vertical, 5)
                                 .background(Capsule().fill(Color.white.opacity(0.75)))
                             Spacer()
-                            Text(selectedScope == .daily ? "🌸" : (selectedScope == .weekly ? "🌷" : "✨"))
-                                .font(.title2)
+                            if !isADDFriendly {
+                                Text(selectedScope == .daily ? "🌸" : (selectedScope == .weekly ? "🌷" : "✨"))
+                                    .font(.title2)
+                            }
                         }
 
                         HStack(spacing: 14) {
@@ -87,11 +95,11 @@ struct ReflectionsView: View {
                             )
                             statTile(
                                 value: DateHelpers.formatDuration(minutes: activeDigest.totalCompletedMinutes),
-                                label: "Cozy Time"
+                                label: isADDFriendly ? "Time" : "Cozy Time"
                             )
                             statTile(
                                 value: "\(activeDigest.activeDaysCount)",
-                                label: selectedScope == .daily ? "Active Today" : "Active Days"
+                                label: selectedScope == .daily ? (isADDFriendly ? "Active" : "Active Today") : "Days"
                             )
                         }
                     }
@@ -105,55 +113,61 @@ struct ReflectionsView: View {
                             .strokeBorder(CozyTheme.cardBorder, lineWidth: 1)
                     )
 
-                    // Streak & Medal Records Card
-                    streakRecordsCard
-
-                    // Notification Preview Card
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Label("Summary Notification Preview", systemImage: "bell.badge.fill")
-                                .font(.system(.subheadline, design: .rounded, weight: .bold))
-                                .foregroundStyle(CozyTheme.deepRose)
-                            Spacer()
-                            Text(notificationScheduleBadge)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(CozyTheme.inkSecondary)
-                        }
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(activeDigest.notificationTitle)
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(CozyTheme.inkPrimary)
-                            Text(activeDigest.notificationBody)
-                                .font(.footnote)
-                                .foregroundStyle(CozyTheme.inkSecondary)
-                        }
-                        .padding(14)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(CozyTheme.canvasMiddle)
-                        )
+                    // Optional Streak & Medal Records Card
+                    if preferences.streaksEnabled || preferences.dayRanksEnabled {
+                        streakRecordsCard
                     }
-                    .padding(18)
-                    .cozyCard()
+
+                    // Notification Preview Card (hidden in ADD Friendly Mode)
+                    if !isADDFriendly {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Label("Summary Notification Preview", systemImage: "bell.badge.fill")
+                                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                                    .foregroundStyle(CozyTheme.deepRose)
+                                Spacer()
+                                Text(notificationScheduleBadge)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(CozyTheme.inkSecondary)
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(activeDigest.notificationTitle)
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(CozyTheme.inkPrimary)
+                                Text(activeDigest.notificationBody)
+                                    .font(.footnote)
+                                    .foregroundStyle(CozyTheme.inkSecondary)
+                            }
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(CozyTheme.canvasMiddle)
+                            )
+                        }
+                        .padding(18)
+                        .cozyCard()
+                    }
 
                     // Completed Moments List
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Completed Moments")
+                        Text(isADDFriendly ? "Completed" : "Completed Moments")
                             .font(.system(.subheadline, design: .rounded, weight: .bold))
                             .foregroundStyle(CozyTheme.deepRose)
 
                         if activeDigest.completedItems.isEmpty {
-                            Text("Check off a task card on Today's Checklist to see your wins bloom here 🌱")
+                            Text(isADDFriendly ? "None yet" : "Check off a task card on Today's Checklist to see your wins bloom here 🌱")
                                 .font(.subheadline)
                                 .foregroundStyle(CozyTheme.inkSecondary)
                                 .padding(.vertical, 8)
                         } else {
                             ForEach(activeDigest.completedItems) { item in
                                 HStack(spacing: 12) {
-                                    Text(item.emoji)
-                                        .font(.title3)
+                                    if !isADDFriendly {
+                                        Text(item.emoji)
+                                            .font(.title3)
+                                    }
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(item.title)
                                             .font(.subheadline.weight(.semibold))
@@ -163,7 +177,7 @@ struct ReflectionsView: View {
                                             .foregroundStyle(CozyTheme.inkSecondary)
                                     }
                                     Spacer()
-                                    Image(systemName: "heart.fill")
+                                    Image(systemName: isADDFriendly ? "checkmark" : "heart.fill")
                                         .font(.caption)
                                         .foregroundStyle(CozyTheme.roseAccent)
                                 }
@@ -236,40 +250,50 @@ struct ReflectionsView: View {
     private var streakRecordsCard: some View {
         let snapshot = StreakAndBonusService.evaluate(
             occurrences: occurrences,
-            persistedLongestStreak: preferences.longestRecordedStreak
+            persistedLongestStreak: preferences.longestRecordedStreak,
+            optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled
         )
 
         return VStack(alignment: .leading, spacing: 12) {
-            Label("Streak & Medal Records", systemImage: "flame.fill")
-                .font(.system(.subheadline, design: .rounded, weight: .bold))
-                .foregroundStyle(CozyTheme.deepRose)
-
-            HStack(spacing: 12) {
-                statTile(
-                    value: "\(snapshot.currentStreak)d",
-                    label: "Current Streak"
-                )
-                statTile(
-                    value: "\(snapshot.longestStreak)d",
-                    label: "Longest Streak"
-                )
-            }
-            .padding(4)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(CozyTheme.softBlushFill.opacity(0.65))
+            Label(
+                preferences.streaksEnabled ? (isADDFriendly ? "Streaks" : "Streak & Medal Records") : "Day Ranks",
+                systemImage: "flame.fill"
             )
+            .font(.system(.subheadline, design: .rounded, weight: .bold))
+            .foregroundStyle(CozyTheme.deepRose)
 
-            HStack(spacing: 8) {
-                Text("🥇 Gold: \(snapshot.totalGoldDays)")
-                Text("·")
-                Text("🥈 Silver: \(snapshot.totalSilverDays)")
-                Text("·")
-                Text("🥉 Complete: \(snapshot.totalBronzeOrPinkDays)")
+            if preferences.streaksEnabled {
+                HStack(spacing: 12) {
+                    statTile(
+                        value: "\(snapshot.currentStreak)d",
+                        label: isADDFriendly ? "Current" : "Current Streak"
+                    )
+                    statTile(
+                        value: "\(snapshot.longestStreak)d",
+                        label: isADDFriendly ? "Best" : "Longest Streak"
+                    )
+                }
+                .padding(4)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(CozyTheme.softBlushFill.opacity(0.65))
+                )
             }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(CozyTheme.inkSecondary)
-            .frame(maxWidth: .infinity, alignment: .center)
+
+            if preferences.dayRanksEnabled {
+                HStack(spacing: 8) {
+                    Text("🥇 Gold: \(snapshot.totalGoldDays)")
+                    if preferences.optionalBonusTasksEnabled {
+                        Text("·")
+                        Text("🥈 Silver: \(snapshot.totalSilverDays)")
+                        Text("·")
+                        Text("🥉 Complete: \(snapshot.totalBronzeOrPinkDays)")
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(CozyTheme.inkSecondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
         }
         .padding(18)
         .cozyCard()

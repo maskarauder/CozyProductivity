@@ -2,7 +2,10 @@ import SwiftUI
 
 struct TaskChecklistCardView: View {
     let occurrence: TaskOccurrence
+    var today: Date = DateHelpers.logicalToday()
+    var addFriendlyMode: Bool = false
     var onToggleComplete: () -> Void
+    var onAdjustWeight: (TaskWeight) -> Void
     var onEditTemplate: () -> Void
     var onMoveToTomorrow: () -> Void
     var onMoveToFreestDay: () -> Void
@@ -12,6 +15,24 @@ struct TaskChecklistCardView: View {
 
     private var recurrence: RecurrenceKind {
         occurrence.template?.recurrence ?? .once
+    }
+
+    private var weight: TaskWeight {
+        occurrence.displayWeight
+    }
+
+    private var hardDeadline: Date? {
+        occurrence.effectiveHardDeadline()
+    }
+
+    private func deadlineLabel(for deadline: Date) -> String {
+        if DateHelpers.isSameDay(deadline, today) {
+            return "Due Today"
+        } else if deadline < today {
+            return "Overdue · \(DateHelpers.shortMonthDayString(for: deadline))"
+        } else {
+            return "Due \(DateHelpers.shortMonthDayString(for: deadline))"
+        }
     }
 
     private func triggerToggle() {
@@ -65,8 +86,10 @@ struct TaskChecklistCardView: View {
             // Emoji + Task Details
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(occurrence.displayEmoji)
-                        .font(.title3)
+                    if !addFriendlyMode {
+                        Text(occurrence.displayEmoji)
+                            .font(.title3)
+                    }
 
                     Text(occurrence.displayTitle)
                         .font(.system(.body, design: .rounded, weight: .semibold))
@@ -77,51 +100,134 @@ struct TaskChecklistCardView: View {
                     Spacer(minLength: 4)
                 }
 
-                if !occurrence.displayNotes.isEmpty && !occurrence.isCompleted {
+                if !addFriendlyMode && !occurrence.displayNotes.isEmpty && !occurrence.isCompleted {
                     Text(occurrence.displayNotes)
                         .font(.footnote)
                         .foregroundStyle(CozyTheme.inkSecondary)
                         .lineLimit(2)
                 }
 
-                // Duration + Recurrence Pills
-                HStack(spacing: 8) {
+                // Duration + Weight + Recurrence Pills
+                HStack(spacing: 6) {
                     Label(DateHelpers.formatDuration(minutes: occurrence.displayDurationMinutes), systemImage: "clock")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(CozyTheme.deepRose)
-                        .padding(.horizontal, 9)
+                        .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(
                             Capsule(style: .continuous)
                                 .fill(CozyTheme.softBlushFill)
                         )
 
-                    HStack(spacing: 4) {
-                        Image(systemName: recurrence.systemImage)
-                            .font(.system(size: 10, weight: .semibold))
-                        Text(occurrence.recurrenceLabel)
-                            .font(.caption.weight(.medium))
-                    }
-                    .foregroundStyle(recurrence.pillForeground)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(recurrence.pillBackground)
-                    )
-
-                    if let category = occurrence.template?.category {
-                        Text(category.title)
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(CozyTheme.inkSecondary)
+                    if !addFriendlyMode || weight != .light {
+                        HStack(spacing: 3) {
+                            if !addFriendlyMode {
+                                Text(weight.emoji)
+                                    .font(.system(size: 10))
+                            }
+                            Text(addFriendlyMode ? weight.title : weight.badgeLabel)
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .foregroundStyle(weight.pillForeground)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(weight.pillBackground)
+                        )
                     }
 
-                    Spacer()
+                    if !addFriendlyMode || recurrence != .once {
+                        HStack(spacing: 4) {
+                            if !addFriendlyMode {
+                                Image(systemName: recurrence.systemImage)
+                                    .font(.system(size: 10, weight: .semibold))
+                            }
+                            Text(occurrence.recurrenceLabel)
+                                .font(.caption2.weight(.medium))
+                        }
+                        .foregroundStyle(recurrence.pillForeground)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(recurrence.pillBackground)
+                        )
+                    }
+
+                    if addFriendlyMode, let deadline = hardDeadline {
+                        let isUrgent = deadline <= today
+                        Text(deadlineLabel(for: deadline))
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(isUrgent ? .white : CozyTheme.deepRose)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(
+                                        isUrgent
+                                            ? AnyShapeStyle(CozyTheme.primaryButtonGradient)
+                                            : AnyShapeStyle(CozyTheme.petalPill)
+                                    )
+                            )
+                    }
+
+                    Spacer(minLength: 0)
+                }
+
+                if !addFriendlyMode && (hardDeadline != nil || occurrence.template?.category != nil) {
+                    HStack(spacing: 8) {
+                        if let deadline = hardDeadline {
+                            let isUrgent = deadline <= today
+                            HStack(spacing: 4) {
+                                Image(systemName: isUrgent ? "exclamationmark.circle.fill" : "flag.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                                Text("Hard Deadline · \(deadlineLabel(for: deadline))")
+                                    .font(.caption2.weight(.bold))
+                            }
+                            .foregroundStyle(isUrgent ? .white : CozyTheme.deepRose)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(
+                                        isUrgent
+                                            ? AnyShapeStyle(CozyTheme.primaryButtonGradient)
+                                            : AnyShapeStyle(CozyTheme.petalPill)
+                                    )
+                            )
+                        }
+
+                        if let category = occurrence.template?.category {
+                            Text(category.title)
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(CozyTheme.inkSecondary)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
                 }
             }
 
             // Overflow Quick Menu
             Menu {
+                Menu {
+                    ForEach(TaskWeight.allCases) { option in
+                        Button {
+                            onAdjustWeight(option)
+                        } label: {
+                            HStack {
+                                Text("\(option.emoji) \(option.badgeLabel)")
+                                if option == weight {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Task Weight (\(weight.title))", systemImage: "scalemass")
+                }
+
                 Button {
                     onEditTemplate()
                 } label: {
@@ -135,7 +241,7 @@ struct TaskChecklistCardView: View {
                         Label("Move to Tomorrow", systemImage: "sunrise")
                     }
 
-                    if recurrence.supportsFlexibleDaySelection {
+                    if recurrence.supportsFlexibleDaySelection && (hardDeadline == nil || hardDeadline! > today) {
                         Button {
                             onMoveToFreestDay()
                         } label: {

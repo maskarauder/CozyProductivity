@@ -21,6 +21,10 @@ struct RootTabView: View {
     @State private var calendarBusyByDay: [Date: Int] = [:]
     @State private var fallbackPreferences = CozyPreferences()
     @State private var hasBootstrapped = false
+    @State private var showingDailyCupPrompt = false
+    @State private var currentLogicalDay: Date = DateHelpers.logicalToday()
+
+    private let cupResetTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     private var activePreferences: CozyPreferences {
         preferencesList.first ?? fallbackPreferences
@@ -96,14 +100,33 @@ struct RootTabView: View {
             ConfettiCelebrationOverlay(controller: celebration)
         }
         .preferredColorScheme(.light)
+        .sheet(isPresented: $showingDailyCupPrompt) {
+            DailyCupPromptSheet(
+                preferences: activePreferences,
+                logicalToday: currentLogicalDay
+            ) {
+                refreshCalendarAndRebalance()
+            }
+        }
         .task {
             bootstrapIfNeeded()
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active && hasBootstrapped {
+                currentLogicalDay = DateHelpers.logicalToday()
                 refreshCalendarAndRebalance()
+                evaluateCupPromptIfNeeded()
             } else if newPhase == .background && hasBootstrapped {
                 syncNotifications()
+            }
+        }
+        .onReceive(cupResetTimer) { _ in
+            guard hasBootstrapped && scenePhase == .active else { return }
+            let latestLogicalDay = DateHelpers.logicalToday()
+            if !DateHelpers.isSameDay(latestLogicalDay, currentLogicalDay) {
+                currentLogicalDay = latestLogicalDay
+                refreshCalendarAndRebalance()
+                evaluateCupPromptIfNeeded()
             }
         }
     }
@@ -124,13 +147,31 @@ struct RootTabView: View {
             prefs = created
         }
 
+        currentLogicalDay = DateHelpers.logicalToday()
         SmartScheduler.seedStarterTasksIfNeeded(context: modelContext, preferences: prefs)
         refreshCalendarAndRebalance(using: prefs)
+        evaluateCupPromptIfNeeded(using: prefs)
+    }
+
+    private func evaluateCupPromptIfNeeded(using explicitPrefs: CozyPreferences? = nil) {
+        let prefs = explicitPrefs ?? activePreferences
+        let logicalDay = DateHelpers.logicalToday()
+        currentLogicalDay = logicalDay
+        if !prefs.dailyCupPromptEnabled {
+            if showingDailyCupPrompt {
+                showingDailyCupPrompt = false
+            }
+            return
+        }
+        if prefs.needsCupCheckIn(for: logicalDay) && !showingDailyCupPrompt {
+            showingDailyCupPrompt = true
+        }
     }
 
     private func refreshCalendarAndRebalance(using explicitPrefs: CozyPreferences? = nil) {
         let prefs = explicitPrefs ?? activePreferences
-        let today = DateHelpers.startOfDay(for: Date())
+        let today = DateHelpers.logicalToday()
+        currentLogicalDay = today
         let horizonEnd = DateHelpers.addDays(SmartScheduler.defaultHorizonDays - 1, to: today)
 
         // Immediate synchronous local rebalance first so UI never waits on network I/O
@@ -154,7 +195,7 @@ struct RootTabView: View {
             referenceDate: today
         )
 
-        if prefs.useGoogleCalendarSync || prefs.pushTasksToGoogleCalendar {
+        if prefs.shouldAutoSyncCalendarsOnChange {
             Task { @MainActor in
                 let report = await GoogleCalendarService.shared.syncCalendarsAndRebalance(
                     context: modelContext,
@@ -164,25 +205,34 @@ struct RootTabView: View {
                 calendarBusyByDay = report.mergedBusyByDay
             }
         } else {
-            syncNotifications(using: prefs)
+            let latestOccurrences = (try? modelContext.fetch(FetchDescriptor<TaskOccurrence>())) ?? occurrences
+            Task { @MainActor in
+                await NotificationManager.shared.syncSummaryNotifications(
+                    preferences: prefs,
+                    occurrences: latestOccurrences
+                )
+            }
         }
     }
 
     private func syncNotifications(using explicitPrefs: CozyPreferences? = nil) {
         let prefs = explicitPrefs ?? activePreferences
+        let logicalDay = DateHelpers.logicalToday()
         let latestOccurrences = (try? modelContext.fetch(FetchDescriptor<TaskOccurrence>())) ?? occurrences
         Task { @MainActor in
             await NotificationManager.shared.syncSummaryNotifications(
                 preferences: prefs,
                 occurrences: latestOccurrences
             )
-            if prefs.pushTasksToGoogleCalendar {
-                let report = await GoogleCalendarService.shared.syncCalendarsAndRebalance(
+            if prefs.autoSyncCalendarChanges && prefs.hasAnyCalendarPushEnabled {
+                let report = await GoogleCalendarService.shared.pushOccurrenceChangesWithoutRebalance(
                     context: modelContext,
                     preferences: prefs,
-                    referenceDate: Date()
+                    referenceDate: logicalDay
                 )
-                calendarBusyByDay = report.mergedBusyByDay
+                if prefs.hasAnyCalendarBusySyncEnabled {
+                    calendarBusyByDay = report.mergedBusyByDay
+                }
             }
         }
     }

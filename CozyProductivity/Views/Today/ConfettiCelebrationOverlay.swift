@@ -31,7 +31,16 @@ final class CelebrationController {
 
     struct PerfectOverlayState: Equatable {
         let streakDays: Int
+        let showStreak: Bool
         let id = UUID()
+    }
+
+    struct Options {
+        var confettiEnabled: Bool = true
+        var streaksEnabled: Bool = true
+        var dayRanksEnabled: Bool = true
+        var optionalBonusTasksEnabled: Bool = true
+        var addFriendlyMode: Bool = false
     }
 
     private(set) var particles: [Particle] = []
@@ -49,19 +58,31 @@ final class CelebrationController {
         "Little wins add up 💕"
     ]
 
-    func celebrate(taskTitle: String, allDoneForToday: Bool) {
+    func celebrate(
+        taskTitle: String,
+        allDoneForToday: Bool,
+        options: Options = Options()
+    ) {
         hapticCounter += 1
-        spawnParticles(
-            count: allDoneForToday ? 115 : 72,
-            palette: CozyTheme.confettiColors,
-            speedRange: allDoneForToday ? 460...860 : 380...740,
-            staggerWindow: 0.14,
-            wideSpread: allDoneForToday
-        )
+        if options.confettiEnabled {
+            spawnParticles(
+                count: allDoneForToday ? 115 : 72,
+                palette: CozyTheme.confettiColors,
+                speedRange: allDoneForToday ? 460...860 : 380...740,
+                staggerWindow: 0.14,
+                wideSpread: allDoneForToday
+            )
+        } else {
+            particles.removeAll()
+        }
 
         perfectOverlay = nil
-        if allDoneForToday {
-            bannerMessage = "🌸 All daily tasks complete! 2 bonus tasks unlocked ✨"
+        if options.addFriendlyMode || !options.confettiEnabled {
+            bannerMessage = nil
+        } else if allDoneForToday {
+            bannerMessage = options.optionalBonusTasksEnabled
+                ? "🌸 All daily tasks complete! 2 bonus tasks unlocked ✨"
+                : "🌸 All daily tasks complete! ✨"
         } else {
             let prefix = Self.cheers.randomElement() ?? "Lovely job! 🌸"
             bannerMessage = "\(prefix)  ·  \(taskTitle)"
@@ -69,37 +90,78 @@ final class CelebrationController {
         scheduleDismiss(after: 2.9)
     }
 
-    func celebrateSilver(taskTitle: String, streakDays: Int) {
+    func celebrateSilver(
+        taskTitle: String,
+        streakDays: Int,
+        options: Options = Options()
+    ) {
         hapticCounter += 1
-        spawnParticles(
-            count: 130,
-            palette: CozyTheme.silverConfettiColors,
-            speedRange: 440...840,
-            staggerWindow: 0.18,
-            wideSpread: true
-        )
+        if options.confettiEnabled {
+            spawnParticles(
+                count: 130,
+                palette: options.dayRanksEnabled ? CozyTheme.silverConfettiColors : CozyTheme.confettiColors,
+                speedRange: 440...840,
+                staggerWindow: 0.18,
+                wideSpread: true
+            )
+        } else {
+            particles.removeAll()
+        }
 
         perfectOverlay = nil
-        bannerMessage = "🥈 Silver Day! Streak preserved (\(streakDays)d) · 1 more for Gold!"
+        if options.addFriendlyMode || (!options.confettiEnabled && !options.dayRanksEnabled && !options.streaksEnabled) {
+            bannerMessage = nil
+        } else if options.dayRanksEnabled && options.streaksEnabled {
+            bannerMessage = "🥈 Silver Day! Streak preserved (\(streakDays)d) · 1 more for Gold!"
+        } else if options.dayRanksEnabled {
+            bannerMessage = "🥈 Silver Day! 1 more bonus task for Gold!"
+        } else if options.streaksEnabled {
+            bannerMessage = "✨ Bonus task complete · Streak preserved (\(streakDays)d)"
+        } else {
+            bannerMessage = "✨ Bonus task complete · \(taskTitle)"
+        }
         scheduleDismiss(after: 3.1)
     }
 
-    func celebrateGoldPerfect(streakDays: Int) {
+    func celebrateGoldPerfect(
+        streakDays: Int,
+        options: Options = Options()
+    ) {
         hapticCounter += 1
-        // Massive multi-wave golden + pastel pink confetti barrage!
-        spawnParticles(
-            count: 240,
-            palette: CozyTheme.goldConfettiColors,
-            speedRange: 500...1020,
-            staggerWindow: 0.55,
-            wideSpread: true
-        )
-
-        bannerMessage = nil
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.68)) {
-            perfectOverlay = PerfectOverlayState(streakDays: streakDays)
+        if options.confettiEnabled {
+            spawnParticles(
+                count: options.dayRanksEnabled ? 240 : 120,
+                palette: options.dayRanksEnabled ? CozyTheme.goldConfettiColors : CozyTheme.confettiColors,
+                speedRange: options.dayRanksEnabled ? 500...1020 : 460...860,
+                staggerWindow: options.dayRanksEnabled ? 0.55 : 0.16,
+                wideSpread: true
+            )
+        } else {
+            particles.removeAll()
         }
-        scheduleDismiss(after: 3.6)
+
+        if options.dayRanksEnabled {
+            bannerMessage = nil
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.68)) {
+                perfectOverlay = PerfectOverlayState(
+                    streakDays: streakDays,
+                    showStreak: options.streaksEnabled
+                )
+            }
+            scheduleDismiss(after: 3.6)
+        } else {
+            perfectOverlay = nil
+            if options.addFriendlyMode {
+                bannerMessage = nil
+            } else if options.streaksEnabled {
+                bannerMessage = "🌸 All tasks complete! Streak Days \(streakDays) ✨"
+            } else if options.confettiEnabled {
+                bannerMessage = "🌸 All tasks complete! ✨"
+            } else {
+                bannerMessage = nil
+            }
+            scheduleDismiss(after: 2.9)
+        }
     }
 
     private func spawnParticles(
@@ -244,7 +306,7 @@ struct ConfettiCelebrationOverlay: View {
                 Spacer()
             }
 
-            // Centerpiece Gold "PERFECT" + "Streak Days X" Hero Celebration
+            // Centerpiece Gold "PERFECT" + Optional "Streak Days X" Hero Celebration
             if let perfect = controller.perfectOverlay {
                 VStack(spacing: 8) {
                     HStack(spacing: 6) {
@@ -264,19 +326,21 @@ struct ConfettiCelebrationOverlay: View {
                         .foregroundStyle(CozyTheme.perfectTitleGradient)
                         .shadow(color: CozyTheme.goldBorder.opacity(0.28), radius: 8, x: 0, y: 3)
 
-                    Text("Streak Days \(perfect.streakDays)")
-                        .font(.system(.headline, design: .rounded, weight: .bold))
-                        .foregroundStyle(CozyTheme.goldInk)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 6)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(CozyTheme.goldGradient)
-                        )
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .strokeBorder(CozyTheme.goldBorder.opacity(0.65), lineWidth: 1)
-                        )
+                    if perfect.showStreak {
+                        Text("Streak Days \(perfect.streakDays)")
+                            .font(.system(.headline, design: .rounded, weight: .bold))
+                            .foregroundStyle(CozyTheme.goldInk)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(CozyTheme.goldGradient)
+                            )
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .strokeBorder(CozyTheme.goldBorder.opacity(0.65), lineWidth: 1)
+                            )
+                    }
                 }
                 .padding(.horizontal, 34)
                 .padding(.vertical, 26)

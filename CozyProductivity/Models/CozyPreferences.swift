@@ -43,13 +43,28 @@ final class CozyPreferences {
     var longestRecordedStreak: Int = 0
     var baseHighlightStyleRaw: String = BaseHighlightColorStyle.roseBronze.rawValue
 
-    // MARK: - Two-Way Google Calendar Sync
+    // MARK: - Two-Way Google & Apple Calendar Sync
     var useGoogleCalendarSync: Bool = false
     var pushTasksToGoogleCalendar: Bool = false
+    var pushTasksToAppleCalendar: Bool = false
+    var appleTargetCalendarIdentifier: String = ""
+    var autoSyncCalendarChanges: Bool = true
     var googleSyncModeRaw: String = GoogleCalendarSyncMode.oauthREST.rawValue
     var googleClientID: String = ""
     var googleCalendarID: String = "primary"
     var googleTaskPushStartHour: Int = 18
+
+    // MARK: - Daily Cup Check-In (0...5 Hours, Resetting at 4:00 AM)
+    var dailyCupPromptEnabled: Bool = true
+    var lastCupCheckInDayKey: String = ""
+    var todayCupHours: Int = 3
+
+    // MARK: - Optional Gamification & ADD Friendly Mode
+    var streaksEnabled: Bool = true
+    var optionalBonusTasksEnabled: Bool = true
+    var dayRanksEnabled: Bool = true
+    var confettiEnabled: Bool = true
+    var addFriendlyMode: Bool = false
 
     init(
         id: UUID = UUID(),
@@ -80,10 +95,21 @@ final class CozyPreferences {
         baseHighlightStyle: BaseHighlightColorStyle = .roseBronze,
         useGoogleCalendarSync: Bool = false,
         pushTasksToGoogleCalendar: Bool = false,
+        pushTasksToAppleCalendar: Bool = false,
+        appleTargetCalendarIdentifier: String = "",
+        autoSyncCalendarChanges: Bool = true,
         googleSyncMode: GoogleCalendarSyncMode = .oauthREST,
         googleClientID: String = "",
         googleCalendarID: String = "primary",
-        googleTaskPushStartHour: Int = 18
+        googleTaskPushStartHour: Int = 18,
+        dailyCupPromptEnabled: Bool = true,
+        lastCupCheckInDayKey: String = "",
+        todayCupHours: Int = 3,
+        streaksEnabled: Bool = true,
+        optionalBonusTasksEnabled: Bool = true,
+        dayRanksEnabled: Bool = true,
+        confettiEnabled: Bool = true,
+        addFriendlyMode: Bool = false
     ) {
         self.id = id
         self.sundayBudgetMinutes = sundayBudgetMinutes
@@ -113,10 +139,21 @@ final class CozyPreferences {
         self.baseHighlightStyleRaw = baseHighlightStyle.rawValue
         self.useGoogleCalendarSync = useGoogleCalendarSync
         self.pushTasksToGoogleCalendar = pushTasksToGoogleCalendar
+        self.pushTasksToAppleCalendar = pushTasksToAppleCalendar
+        self.appleTargetCalendarIdentifier = appleTargetCalendarIdentifier
+        self.autoSyncCalendarChanges = autoSyncCalendarChanges
         self.googleSyncModeRaw = googleSyncMode.rawValue
         self.googleClientID = googleClientID
         self.googleCalendarID = googleCalendarID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "primary" : googleCalendarID
         self.googleTaskPushStartHour = max(6, min(22, googleTaskPushStartHour))
+        self.dailyCupPromptEnabled = dailyCupPromptEnabled
+        self.lastCupCheckInDayKey = lastCupCheckInDayKey
+        self.todayCupHours = max(0, min(5, todayCupHours))
+        self.streaksEnabled = streaksEnabled
+        self.optionalBonusTasksEnabled = optionalBonusTasksEnabled
+        self.dayRanksEnabled = dayRanksEnabled
+        self.confettiEnabled = confettiEnabled
+        self.addFriendlyMode = addFriendlyMode
     }
 
     var calendarDeductionMode: CalendarDeductionMode {
@@ -137,6 +174,47 @@ final class CozyPreferences {
     /// True whenever Apple Calendar busy sync or Google Calendar busy sync is active.
     var hasAnyCalendarBusySyncEnabled: Bool {
         useCalendarSync || useGoogleCalendarSync
+    }
+
+    /// True whenever Cozy is configured to push/sync scheduled tasks onto Google and/or Apple Calendar.
+    var hasAnyCalendarPushEnabled: Bool {
+        pushTasksToGoogleCalendar || pushTasksToAppleCalendar
+    }
+
+    /// True whenever any Google or Apple Calendar read or push integration is enabled.
+    var hasAnyCalendarIntegrationEnabled: Bool {
+        useCalendarSync || pushTasksToAppleCalendar || useGoogleCalendarSync || pushTasksToGoogleCalendar
+    }
+
+    /// True when task/schedule changes should automatically sync to enabled Google and/or Apple Calendars.
+    var shouldAutoSyncCalendarsOnChange: Bool {
+        autoSyncCalendarChanges && hasAnyCalendarIntegrationEnabled
+    }
+
+    func setDailyCupPromptEnabled(_ enabled: Bool) {
+        dailyCupPromptEnabled = enabled
+        if !enabled {
+            lastCupCheckInDayKey = ""
+        }
+    }
+
+    func hasCupCheckIn(for day: Date, calendar: Calendar = DateHelpers.calendar) -> Bool {
+        lastCupCheckInDayKey == DateHelpers.dayKeyString(for: day, calendar: calendar)
+    }
+
+    func needsCupCheckIn(for day: Date, calendar: Calendar = DateHelpers.calendar) -> Bool {
+        guard dailyCupPromptEnabled else { return false }
+        return !hasCupCheckIn(for: day, calendar: calendar)
+    }
+
+    func cupHours(for day: Date, calendar: Calendar = DateHelpers.calendar) -> Int? {
+        guard hasCupCheckIn(for: day, calendar: calendar) else { return nil }
+        return max(0, min(5, todayCupHours))
+    }
+
+    func recordCupCheckIn(hours: Int, for day: Date, calendar: Calendar = DateHelpers.calendar) {
+        todayCupHours = max(0, min(5, hours))
+        lastCupCheckInDayKey = DateHelpers.dayKeyString(for: day, calendar: calendar)
     }
 
     /// Weekday is 1 (Sunday) ... 7 (Saturday) in Gregorian Calendar.

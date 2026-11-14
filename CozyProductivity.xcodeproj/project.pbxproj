@@ -25,6 +25,7 @@
 		CD51F3A5D1AED0B5F526C504 /* SummaryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01155A19088B92DA2A3C22D1 /* SummaryBuilder.swift */; };
 		E3DE28FA8477F0948FD489D1 /* CozyShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1635316DA4EA99F7E62996E8 /* CozyShortcuts.swift */; };
 		5021CD1D3D2996F6C8930A86 /* ConfettiCelebrationOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D47066AFA821A9302F56BE4 /* ConfettiCelebrationOverlay.swift */; };
+		BF47A4D909A621F218046348 /* DailyCupPromptSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B3DC78CEBD4714ED87785DD /* DailyCupPromptSheet.swift */; };
 		DE11EC367FA7450AFC51FD34 /* TaskChecklistCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D9F8DB5D10E7ECC045F1D7F /* TaskChecklistCardView.swift */; };
 		DA0E266F8597CBCF773DDC1F /* TodayChecklistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836F953E4EE44D9040CC54E2 /* TodayChecklistView.swift */; };
 		99904EED4EE038E86C7EECFA /* MonthCalendarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEDAA4578F0980D784EDB34 /* MonthCalendarView.swift */; };
@@ -68,6 +69,7 @@
 		01155A19088B92DA2A3C22D1 /* SummaryBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryBuilder.swift; sourceTree = "<group>"; };
 		1635316DA4EA99F7E62996E8 /* CozyShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CozyShortcuts.swift; sourceTree = "<group>"; };
 		1D47066AFA821A9302F56BE4 /* ConfettiCelebrationOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfettiCelebrationOverlay.swift; sourceTree = "<group>"; };
+		4B3DC78CEBD4714ED87785DD /* DailyCupPromptSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyCupPromptSheet.swift; sourceTree = "<group>"; };
 		6D9F8DB5D10E7ECC045F1D7F /* TaskChecklistCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskChecklistCardView.swift; sourceTree = "<group>"; };
 		836F953E4EE44D9040CC54E2 /* TodayChecklistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayChecklistView.swift; sourceTree = "<group>"; };
 		9DEDAA4578F0980D784EDB34 /* MonthCalendarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonthCalendarView.swift; sourceTree = "<group>"; };
@@ -172,6 +174,7 @@
 			isa = PBXGroup;
 			children = (
 				1D47066AFA821A9302F56BE4 /* ConfettiCelebrationOverlay.swift */,
+				4B3DC78CEBD4714ED87785DD /* DailyCupPromptSheet.swift */,
 				6D9F8DB5D10E7ECC045F1D7F /* TaskChecklistCardView.swift */,
 				836F953E4EE44D9040CC54E2 /* TodayChecklistView.swift */,
 			);
@@ -363,6 +366,7 @@
 				CD51F3A5D1AED0B5F526C504 /* SummaryBuilder.swift in Sources */,
 				E3DE28FA8477F0948FD489D1 /* CozyShortcuts.swift in Sources */,
 				5021CD1D3D2996F6C8930A86 /* ConfettiCelebrationOverlay.swift in Sources */,
+				BF47A4D909A621F218046348 /* DailyCupPromptSheet.swift in Sources */,
 				DE11EC367FA7450AFC51FD34 /* TaskChecklistCardView.swift in Sources */,
 				DA0E266F8597CBCF773DDC1F /* TodayChecklistView.swift in Sources */,
 				99904EED4EE038E86C7EECFA /* MonthCalendarView.swift in Sources */,
@@ -447,10 +451,11 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Cozy Tasks";
-				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "CozyProductivity reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
-				INFOPLIST_KEY_NSCalendarsUsageDescription = "CozyProductivity reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
-				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "CozyProductivity pushes scheduled tasks onto your calendar.";
+				INFOPLIST_KEY_CFBundleDisplayName = "Cozy";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Cozy reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Cozy reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Cozy pushes scheduled tasks onto your calendar.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -474,10 +479,11 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Cozy Tasks";
-				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "CozyProductivity reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
-				INFOPLIST_KEY_NSCalendarsUsageDescription = "CozyProductivity reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
-				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "CozyProductivity pushes scheduled tasks onto your calendar.";
+				INFOPLIST_KEY_CFBundleDisplayName = "Cozy";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Cozy reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Cozy reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Cozy pushes scheduled tasks onto your calendar.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

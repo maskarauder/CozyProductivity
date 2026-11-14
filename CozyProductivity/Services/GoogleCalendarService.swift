@@ -210,10 +210,10 @@ final class GoogleCalendarService {
         lastSyncStatusMessage = "Signed in as \(exchangedToken.accountSummary ?? "Google Calendar") 🌸"
     }
 
-    // MARK: - Unified Two-Way Calendar Read + SmartScheduler Rebalance + Push/Merge
+    // MARK: - Unified Two-Way Calendar Read + SmartScheduler Rebalance + Push/Merge (Google & Apple)
 
     /// Reads & union-merges busy intervals from Apple Calendar + Google Calendar, rebalances tasks to freer days,
-    /// pushes/merges scheduled Cozy Tasks onto Google Calendar, and refreshes summary notifications.
+    /// pushes/merges scheduled Cozy Tasks onto Google Calendar and/or Apple Calendar, and refreshes summary notifications.
     func syncCalendarsAndRebalance(
         context: ModelContext,
         preferences: CozyPreferences,
@@ -226,10 +226,124 @@ final class GoogleCalendarService {
         let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
         let horizonEnd = DateHelpers.addDays(SmartScheduler.defaultHorizonDays - 1, to: today, calendar: calendar)
 
+        let readResult = await collectMergedBusyIntervals(
+            from: today,
+            to: horizonEnd,
+            preferences: preferences,
+            calendar: calendar
+        )
+        var statusParts = readResult.statusParts
+
+        // Rebalance flexible tasks across freer days using the merged free-time map
+        SmartScheduler.rebalance(
+            context: context,
+            preferences: preferences,
+            calendarBusyByDay: readResult.mergedBusyMinutesByDay,
+            referenceDate: today,
+            calendar: calendar
+        )
+
+        // Push & merge scheduled Cozy Tasks onto Apple Calendar and/or Google Calendar
+        let pushResult = await pushOccurrencesToEnabledCalendars(
+            context: context,
+            combinedIntervalsByDay: readResult.combinedIntervalsByDay,
+            preferences: preferences,
+            today: today,
+            calendar: calendar
+        )
+        statusParts.append(contentsOf: pushResult.statusParts)
+
+        // Refresh summary notifications
+        let finalOccurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
+        await NotificationManager.shared.syncSummaryNotifications(
+            preferences: preferences,
+            occurrences: finalOccurrences
+        )
+
+        let summaryText = statusParts.isEmpty
+            ? "Schedule balanced across your free-time budgets 🌸"
+            : statusParts.joined(separator: " · ")
+
+        if preferences.hasAnyCalendarIntegrationEnabled {
+            lastSyncedAt = Date()
+            lastSyncStatusMessage = summaryText
+        }
+
+        return CalendarSyncReport(
+            mergedBusyByDay: readResult.mergedBusyMinutesByDay,
+            upsertedCount: pushResult.upsertedCount,
+            removedCount: pushResult.removedCount,
+            statusMessage: summaryText
+        )
+    }
+
+    /// Pushes task completion (✅), manual date moves, bonus swaps, or deletions to Google and/or Apple Calendars
+    /// without re-running `SmartScheduler.rebalance` so Today's remaining checklist stays untouched.
+    func pushOccurrenceChangesWithoutRebalance(
+        context: ModelContext,
+        preferences: CozyPreferences,
+        referenceDate: Date = Date(),
+        calendar: Calendar = DateHelpers.calendar
+    ) async -> CalendarSyncReport {
+        guard preferences.hasAnyCalendarPushEnabled else {
+            return CalendarSyncReport(
+                mergedBusyByDay: [:],
+                upsertedCount: 0,
+                removedCount: 0,
+                statusMessage: "Calendar task push is turned off."
+            )
+        }
+
+        isSyncing = true
+        defer { isSyncing = false }
+
+        let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
+        let horizonEnd = DateHelpers.addDays(SmartScheduler.defaultHorizonDays - 1, to: today, calendar: calendar)
+
+        let readResult = await collectMergedBusyIntervals(
+            from: today,
+            to: horizonEnd,
+            preferences: preferences,
+            calendar: calendar
+        )
+
+        let pushResult = await pushOccurrencesToEnabledCalendars(
+            context: context,
+            combinedIntervalsByDay: readResult.combinedIntervalsByDay,
+            preferences: preferences,
+            today: today,
+            calendar: calendar
+        )
+
+        let statusParts = readResult.statusParts + pushResult.statusParts
+        let summaryText = statusParts.isEmpty
+            ? "Calendars are up to date 🌸"
+            : statusParts.joined(separator: " · ")
+
+        lastSyncedAt = Date()
+        lastSyncStatusMessage = summaryText
+
+        return CalendarSyncReport(
+            mergedBusyByDay: readResult.mergedBusyMinutesByDay,
+            upsertedCount: pushResult.upsertedCount,
+            removedCount: pushResult.removedCount,
+            statusMessage: summaryText
+        )
+    }
+
+    private func collectMergedBusyIntervals(
+        from today: Date,
+        to horizonEnd: Date,
+        preferences: CozyPreferences,
+        calendar: Calendar
+    ) async -> (
+        combinedIntervalsByDay: [Date: [(Date, Date)]],
+        mergedBusyMinutesByDay: [Date: Int],
+        statusParts: [String]
+    ) {
         var intervalSources: [[Date: [(Date, Date)]]] = []
         var statusParts: [String] = []
 
-        // 1. Read Apple Calendar busy intervals if enabled
         if preferences.useCalendarSync {
             let appleIntervals = CalendarFreeTimeService.shared.busyIntervalsByDay(
                 from: today,
@@ -241,7 +355,6 @@ final class GoogleCalendarService {
             intervalSources.append(appleIntervals)
         }
 
-        // 2. Read Google Calendar busy intervals if enabled
         if preferences.useGoogleCalendarSync {
             switch preferences.googleSyncMode {
             case .oauthREST:
@@ -254,7 +367,7 @@ final class GoogleCalendarService {
                     )
                     intervalSources.append(googleIntervals)
                     let busyDayCount = googleIntervals.values.filter { !$0.isEmpty }.count
-                    statusParts.append("Read \(busyDayCount) Google Calendar busy day\(busyDayCount == 1 ? "" : "s")")
+                    statusParts.append("Read \(busyDayCount) Google busy day\(busyDayCount == 1 ? "" : "s")")
                 } catch {
                     statusParts.append(error.localizedDescription)
                 }
@@ -277,25 +390,27 @@ final class GoogleCalendarService {
             }
         }
 
-        // 3. Union-merge Apple + Google intervals per day so overlapping events are never double-counted
         let combinedIntervalsByDay = CalendarFreeTimeService.combineRawIntervalsByDay(intervalSources)
         let mergedBusyMinutesByDay = CalendarFreeTimeService.mergeBusyIntervalsByDay(intervalSources)
+        return (combinedIntervalsByDay, mergedBusyMinutesByDay, statusParts)
+    }
 
-        // 4. Rebalance flexible tasks across freer days using the merged free-time map
-        SmartScheduler.rebalance(
-            context: context,
-            preferences: preferences,
-            calendarBusyByDay: mergedBusyMinutesByDay,
-            referenceDate: today,
-            calendar: calendar
-        )
+    private func pushOccurrencesToEnabledCalendars(
+        context: ModelContext,
+        combinedIntervalsByDay: [Date: [(Date, Date)]],
+        preferences: CozyPreferences,
+        today: Date,
+        calendar: Calendar
+    ) async -> (upsertedCount: Int, removedCount: Int, statusParts: [String]) {
+        var totalUpserted = 0
+        var totalRemoved = 0
+        var statusParts: [String] = []
 
-        // 5. Push & merge scheduled CozyProductivity tasks back onto Google Calendar if enabled
-        var upsertedCount = 0
-        var removedCount = 0
+        let latestOccurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
+        var googleBridgeCalendarID: String? = nil
 
+        // 1. Push & sync scheduled Cozy Tasks to Google Calendar if enabled
         if preferences.pushTasksToGoogleCalendar {
-            let latestOccurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
             switch preferences.googleSyncMode {
             case .oauthREST:
                 do {
@@ -306,15 +421,16 @@ final class GoogleCalendarService {
                         today: today,
                         calendar: calendar
                     )
-                    upsertedCount = pushed.upserted
-                    removedCount = pushed.removed
+                    totalUpserted += pushed.upserted
+                    totalRemoved += pushed.removed
                     try? context.save()
-                    statusParts.append("Pushed/merged \(upsertedCount) Cozy task\(upsertedCount == 1 ? "" : "s") to Google Calendar")
+                    statusParts.append("Synced \(pushed.upserted) task\(pushed.upserted == 1 ? "" : "s") to Google Calendar")
                 } catch {
                     statusParts.append(error.localizedDescription)
                 }
 
             case .iosGoogleAccount:
+                googleBridgeCalendarID = CalendarFreeTimeService.shared.writableGoogleBridgeCalendar()?.calendarIdentifier
                 let pushed = CalendarFreeTimeService.shared.pushAndMergeViaGoogleBridge(
                     occurrences: latestOccurrences,
                     busyIntervalsByDay: combinedIntervalsByDay,
@@ -322,39 +438,40 @@ final class GoogleCalendarService {
                     today: today,
                     calendar: calendar
                 )
-                upsertedCount = pushed.upserted
-                removedCount = pushed.removed
+                totalUpserted += pushed.upserted
+                totalRemoved += pushed.removed
                 try? context.save()
                 if let calTitle = pushed.calendarTitle {
-                    statusParts.append("Synced \(upsertedCount) task\(upsertedCount == 1 ? "" : "s") to \(calTitle)")
+                    statusParts.append("Synced \(pushed.upserted) task\(pushed.upserted == 1 ? "" : "s") to \(calTitle)")
                 } else {
-                    statusParts.append("Grant Calendar Full Access in Settings to push tasks")
+                    statusParts.append("Grant Calendar Full Access in Settings to sync Google Bridge")
                 }
             }
         }
 
-        // 6. Refresh summary notifications
-        let finalOccurrences = (try? context.fetch(FetchDescriptor<TaskOccurrence>())) ?? []
-        await NotificationManager.shared.syncSummaryNotifications(
-            preferences: preferences,
-            occurrences: finalOccurrences
-        )
-
-        let summaryText = statusParts.isEmpty
-            ? "Schedule balanced across your free-time budgets 🌸"
-            : statusParts.joined(separator: " · ")
-
-        if preferences.useGoogleCalendarSync || preferences.pushTasksToGoogleCalendar {
-            lastSyncedAt = Date()
-            lastSyncStatusMessage = summaryText
+        // 2. Push & sync scheduled Cozy Tasks to Apple Calendar if enabled
+        if preferences.pushTasksToAppleCalendar {
+            let pushedApple = CalendarFreeTimeService.shared.syncOccurrencesToAppleCalendar(
+                occurrences: latestOccurrences,
+                busyIntervalsByDay: combinedIntervalsByDay,
+                preferences: preferences,
+                today: today,
+                avoidCalendarIdentifier: googleBridgeCalendarID,
+                calendar: calendar
+            )
+            totalUpserted += pushedApple.upserted
+            totalRemoved += pushedApple.removed
+            try? context.save()
+            if let appleCalTitle = pushedApple.calendarTitle {
+                statusParts.append("Synced \(pushedApple.upserted) task\(pushedApple.upserted == 1 ? "" : "s") to Apple Calendar (\(appleCalTitle))")
+            } else if googleBridgeCalendarID != nil {
+                statusParts.append("Tasks already synced to default calendar via Google Bridge")
+            } else {
+                statusParts.append("Grant Calendar Full Access in Settings to sync Apple Calendar")
+            }
         }
 
-        return CalendarSyncReport(
-            mergedBusyByDay: mergedBusyMinutesByDay,
-            upsertedCount: upsertedCount,
-            removedCount: removedCount,
-            statusMessage: summaryText
-        )
+        return (totalUpserted, totalRemoved, statusParts)
     }
 
     // MARK: - Google Calendar REST API v3 Read & Push
@@ -422,6 +539,7 @@ final class GoogleCalendarService {
         let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
         let minSyncDay = DateHelpers.addDays(-1, to: today, calendar: calendar)
         let maxSyncDay = DateHelpers.addDays(14, to: today, calendar: calendar)
+        let queryEnd = calendar.date(byAdding: .day, value: 1, to: maxSyncDay) ?? maxSyncDay.addingTimeInterval(86400)
 
         let rawCalID = preferences.googleCalendarID.trimmingCharacters(in: .whitespacesAndNewlines)
         let calID = rawCalID.isEmpty ? "primary" : rawCalID
@@ -430,37 +548,74 @@ final class GoogleCalendarService {
         var placedByDay = busyIntervalsByDay
         var upserted = 0
         var removed = 0
+        var removedRemoteIDs: Set<String> = []
 
-        let sorted = occurrences.sorted {
-            if $0.scheduledDate != $1.scheduledDate {
-                return $0.scheduledDate < $1.scheduledDate
-            }
-            return $0.displayTitle < $1.displayTitle
+        func effectiveOccurrenceDay(_ occ: TaskOccurrence) -> Date {
+            DateHelpers.startOfDay(
+                for: occ.isCompleted ? (occ.bonusForDate ?? occ.scheduledDate) : occ.scheduledDate,
+                calendar: calendar
+            )
         }
 
-        for occ in sorted {
-            if occ.status == .skipped {
-                if let existingEventID = occ.googleCalendarEventId {
+        let activeWindowOccurrences = occurrences
+            .filter { occ in
+                guard occ.status != .skipped else { return false }
+                let day = effectiveOccurrenceDay(occ)
+                return day >= minSyncDay && day <= maxSyncDay
+            }
+            .sorted {
+                let d0 = effectiveOccurrenceDay($0)
+                let d1 = effectiveOccurrenceDay($1)
+                if d0 != d1 { return d0 < d1 }
+                if $0.displayTitle != $1.displayTitle { return $0.displayTitle < $1.displayTitle }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+
+        let activeIDs = Set(activeWindowOccurrences.map(\.id))
+
+        // 1. Reconcile remote Cozy-managed events so deleted or deactivated tasks are removed from Google Calendar too
+        var remoteEventIDByOccID: [UUID: String] = [:]
+        if let managedEvents = try? await fetchCozyManagedGoogleEvents(
+            calendarEncodedID: encodedCalID,
+            from: minSyncDay,
+            to: queryEnd,
+            accessToken: accessToken
+        ) {
+            for item in managedEvents {
+                if let occID = item.occurrenceID, activeIDs.contains(occID) {
+                    remoteEventIDByOccID[occID] = item.eventID
+                } else {
+                    removedRemoteIDs.insert(item.eventID)
+                    try? await deleteGoogleEvent(
+                        calendarEncodedID: encodedCalID,
+                        eventID: item.eventID,
+                        accessToken: accessToken
+                    )
+                    removed += 1
+                }
+            }
+        }
+
+        // 2. Clean up skipped or out-of-window occurrences that still hold a googleCalendarEventId
+        for occ in occurrences where !activeIDs.contains(occ.id) {
+            if let existingEventID = occ.googleCalendarEventId {
+                if !removedRemoteIDs.contains(existingEventID) {
+                    removedRemoteIDs.insert(existingEventID)
                     try? await deleteGoogleEvent(
                         calendarEncodedID: encodedCalID,
                         eventID: existingEventID,
                         accessToken: accessToken
                     )
-                    occ.googleCalendarEventId = nil
-                    occ.lastCalendarSyncSignature = nil
                     removed += 1
                 }
-                continue
+                occ.googleCalendarEventId = nil
+                occ.lastCalendarSyncSignature = nil
             }
+        }
 
-            let effectiveDay = DateHelpers.startOfDay(
-                for: occ.isCompleted ? (occ.bonusForDate ?? occ.scheduledDate) : occ.scheduledDate,
-                calendar: calendar
-            )
-            guard effectiveDay >= minSyncDay && effectiveDay <= maxSyncDay else {
-                continue
-            }
-
+        // 3. Upsert active occurrences in open slots on Google Calendar
+        for occ in activeWindowOccurrences {
+            let effectiveDay = effectiveOccurrenceDay(occ)
             let slot = CalendarFreeTimeService.assignSlotForTask(
                 on: effectiveDay,
                 durationMinutes: occ.displayDurationMinutes,
@@ -477,7 +632,7 @@ final class GoogleCalendarService {
                 title: occ.displayTitle,
                 emoji: occ.displayEmoji,
                 notes: occ.displayNotes,
-                recurrenceLabel: occ.recurrenceLabel,
+                recurrenceLabel: "\(occ.recurrenceLabel) · \(occ.displayWeight.badgeLabel)",
                 isCompleted: occ.isCompleted,
                 isBonus: occ.bonusForDate != nil,
                 start: slot.0,
@@ -485,7 +640,11 @@ final class GoogleCalendarService {
                 timeZoneIdentifier: calendar.timeZone.identifier
             )
 
-            let signature = "\(payload.start.dateTime ?? "")|\(payload.end.dateTime ?? "")|\(payload.summary)"
+            if occ.googleCalendarEventId == nil, let matchedRemoteID = remoteEventIDByOccID[occ.id] {
+                occ.googleCalendarEventId = matchedRemoteID
+            }
+
+            let signature = "\(payload.start.dateTime ?? "")|\(payload.end.dateTime ?? "")|\(payload.summary)|\(payload.description)"
             if occ.googleCalendarEventId != nil && occ.lastCalendarSyncSignature == signature {
                 continue
             }
@@ -534,6 +693,34 @@ final class GoogleCalendarService {
         }
 
         return (upserted, removed)
+    }
+
+    private func fetchCozyManagedGoogleEvents(
+        calendarEncodedID: String,
+        from startDate: Date,
+        to endDate: Date,
+        accessToken: String
+    ) async throws -> [(eventID: String, occurrenceID: UUID?)] {
+        var components = URLComponents(string: "https://www.googleapis.com/calendar/v3/calendars/\(calendarEncodedID)/events")
+        components?.queryItems = [
+            URLQueryItem(name: "singleEvents", value: "true"),
+            URLQueryItem(name: "timeMin", value: Self.formatRFC3339(startDate)),
+            URLQueryItem(name: "timeMax", value: Self.formatRFC3339(endDate)),
+            URLQueryItem(name: "privateExtendedProperty", value: "cozyApp=CozyProductivity"),
+            URLQueryItem(name: "maxResults", value: "2500")
+        ]
+        guard let url = components?.url else {
+            return []
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            return []
+        }
+        return Self.extractCozyManagedEvents(from: data)
     }
 
     // MARK: - Token Management Helpers
@@ -761,6 +948,33 @@ final class GoogleCalendarService {
         return intervals
     }
 
+    /// Extracts CozyProductivity-managed events `(eventID, occurrenceID)` from a Google Calendar v3 Events list JSON payload.
+    nonisolated static func extractCozyManagedEvents(from responseData: Data) -> [(eventID: String, occurrenceID: UUID?)] {
+        guard let decoded = try? JSONDecoder().decode(GoogleEventListResponse.self, from: responseData),
+              let items = decoded.items else {
+            return []
+        }
+
+        var managed: [(eventID: String, occurrenceID: UUID?)] = []
+        for event in items {
+            if event.status?.lowercased() == "cancelled" {
+                continue
+            }
+            guard let eventID = event.id, !eventID.isEmpty else {
+                continue
+            }
+            let priv = event.extendedProperties?.privateProperties
+            let isCozy = (priv?["cozyApp"] == "CozyProductivity")
+                || (priv?["cozyTaskOccurrenceId"] != nil)
+                || (event.description?.contains(CalendarFreeTimeService.cozyEventMarker) == true)
+            guard isCozy else { continue }
+
+            let occUUID = priv?["cozyTaskOccurrenceId"].flatMap { UUID(uuidString: $0) }
+            managed.append((eventID: eventID, occurrenceID: occUUID))
+        }
+        return managed
+    }
+
     nonisolated static func buildEventPayload(
         occurrenceID: UUID,
         title: String,
@@ -778,7 +992,7 @@ final class GoogleCalendarService {
         let summary = "\(prefix)\(emoji) \(title)"
         let cleanNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
         let notesSection = cleanNotes.isEmpty ? "" : "\(cleanNotes)\n\n"
-        let description = "\(notesSection)Scheduled by Cozy Tasks (\(recurrenceLabel)\(bonusTag)) \(CalendarFreeTimeService.cozyEventMarker)"
+        let description = "\(notesSection)Scheduled by Cozy (\(recurrenceLabel)\(bonusTag)) \(CalendarFreeTimeService.cozyEventMarker)"
 
         return GoogleUpsertEventPayload(
             summary: summary,

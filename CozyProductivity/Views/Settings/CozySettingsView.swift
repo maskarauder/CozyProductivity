@@ -1,4 +1,5 @@
 import AppIntents
+import EventKit
 import SwiftData
 import SwiftUI
 
@@ -12,24 +13,37 @@ struct CozySettingsView: View {
     var onNotificationSettingsChanged: () -> Void
 
     @State private var showingOverrideSheet = false
+    @State private var showingCupPromptSheet = false
     @State private var testNotificationStatusMessage: String?
     @State private var googleAuthErrorMessage: String?
     private var googleService = GoogleCalendarService.shared
 
     private let orderedWeekdays = [2, 3, 4, 5, 6, 7, 1] // Monday -> Sunday
 
+    private var isAddFriendly: Bool {
+        preferences.addFriendlyMode
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: isAddFriendly ? 14 : 18) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Cozy Preferences")
+                        Text(isAddFriendly ? "Settings" : "Cozy Settings")
                             .font(.system(.title2, design: .rounded, weight: .bold))
                             .foregroundStyle(CozyTheme.inkPrimary)
-                        Text("Budgets, Google & Apple Calendar sync, Siri & summaries")
-                            .font(.footnote)
-                            .foregroundStyle(CozyTheme.inkSecondary)
+                        if !isAddFriendly {
+                            Text("Focus mode, optional gamification, daily cup, Siri & calendar sync")
+                                .font(.footnote)
+                                .foregroundStyle(CozyTheme.inkSecondary)
+                        }
                     }
+
+                    focusAndGamificationCard
+
+                    dailyCupAndWeightsCard
+
+                    calendarAutoSyncCard
 
                     siriVoiceCommandsCard
 
@@ -50,24 +64,358 @@ struct CozySettingsView: View {
             .cozyScreenBackground()
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showingOverrideSheet) {
-                DayOverrideSheet(existingOverrides: overrides) {
+                DayOverrideSheet(
+                    existingOverrides: overrides,
+                    addFriendlyMode: isAddFriendly
+                ) {
+                    onScheduleSettingsChanged()
+                }
+            }
+            .sheet(isPresented: $showingCupPromptSheet) {
+                DailyCupPromptSheet(preferences: preferences) {
                     onScheduleSettingsChanged()
                 }
             }
         }
     }
 
+    @ViewBuilder
+    private func settingToggleLabel(_ title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(CozyTheme.inkPrimary)
+            if !isAddFriendly && !detail.isEmpty {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(CozyTheme.inkSecondary)
+            }
+        }
+    }
+
+    // MARK: - ADD Friendly Mode & Optional Gamification
+
+    private var focusAndGamificationCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(
+                isAddFriendly ? "Focus & Gamification" : "ADD Friendly Mode & Gamification",
+                systemImage: "sparkles.rectangle.stack.fill"
+            )
+            .font(.system(.subheadline, design: .rounded, weight: .bold))
+            .foregroundStyle(CozyTheme.deepRose)
+
+            Toggle(isOn: Binding(
+                get: { preferences.addFriendlyMode },
+                set: { enabled in
+                    preferences.addFriendlyMode = enabled
+                    try? modelContext.save()
+                }
+            )) {
+                settingToggleLabel(
+                    "ADD Friendly Mode",
+                    detail: "Reduces text across the entire app, trims cozy details, and lists only hours in the “How full is your cup?” dialogue."
+                )
+            }
+            .tint(CozyTheme.roseAccent)
+
+            Divider().overlay(CozyTheme.cardBorder)
+
+            Toggle(isOn: Binding(
+                get: { preferences.streaksEnabled },
+                set: { enabled in
+                    preferences.streaksEnabled = enabled
+                    try? modelContext.save()
+                }
+            )) {
+                settingToggleLabel(
+                    "Streaks",
+                    detail: "Show current and longest recorded day streaks."
+                )
+            }
+            .tint(CozyTheme.roseAccent)
+
+            Toggle(isOn: Binding(
+                get: { preferences.optionalBonusTasksEnabled },
+                set: { enabled in
+                    preferences.optionalBonusTasksEnabled = enabled
+                    try? modelContext.save()
+                    StreakAndBonusService.syncBonusSlots(
+                        context: modelContext,
+                        occurrences: occurrences,
+                        preferences: preferences
+                    )
+                    onScheduleSettingsChanged()
+                }
+            )) {
+                settingToggleLabel(
+                    "Optional Bonus Tasks",
+                    detail: "Show 2 optional tasks from the next 7 days. When off, completing your daily tasks defaults to a Gold day."
+                )
+            }
+            .tint(CozyTheme.roseAccent)
+
+            Toggle(isOn: Binding(
+                get: { preferences.dayRanksEnabled },
+                set: { enabled in
+                    preferences.dayRanksEnabled = enabled
+                    try? modelContext.save()
+                }
+            )) {
+                settingToggleLabel(
+                    "Day Ranks (Bronze, Silver, Gold)",
+                    detail: "Highlight completed days with Bronze, Silver, and Gold ranks and PERFECT banners."
+                )
+            }
+            .tint(CozyTheme.roseAccent)
+
+            Toggle(isOn: Binding(
+                get: { preferences.confettiEnabled },
+                set: { enabled in
+                    preferences.confettiEnabled = enabled
+                    try? modelContext.save()
+                }
+            )) {
+                settingToggleLabel(
+                    "Confetti",
+                    detail: "Shoot celebratory confetti when tasks and days are completed."
+                )
+            }
+            .tint(CozyTheme.roseAccent)
+        }
+        .padding(18)
+        .cozyCard()
+    }
+
+    // MARK: - Daily Cup (0–5h, 4:00 AM Reset) & Task Weights
+
+    private var dailyCupAndWeightsCard: some View {
+        let logicalToday = DateHelpers.logicalToday()
+        let activeCup = preferences.cupHours(for: logicalToday)
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(isAddFriendly ? "Daily Cup" : "Daily Cup & Task Weights", systemImage: "cup.and.saucer.fill")
+                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                    .foregroundStyle(CozyTheme.deepRose)
+                Spacer()
+                Button {
+                    showingCupPromptSheet = true
+                } label: {
+                    Text(isAddFriendly ? "Open" : (preferences.dailyCupPromptEnabled ? "Open Prompt" : "Set Today Once"))
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(CozyTheme.deepRose)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(CozyTheme.petalPill))
+                }
+                .buttonStyle(.plain)
+            }
+
+            Toggle(isOn: Binding(
+                get: { preferences.dailyCupPromptEnabled },
+                set: { enabled in
+                    preferences.setDailyCupPromptEnabled(enabled)
+                    try? modelContext.save()
+                    onScheduleSettingsChanged()
+                }
+            )) {
+                settingToggleLabel(
+                    isAddFriendly ? "Daily Cup Prompt" : "“How full is your cup?” Morning Dialogue",
+                    detail: "Prompts at the start of each day (resetting at 4:00 AM) for 0–5 hours. Turn off to use your weekday free-time budgets automatically."
+                )
+            }
+            .tint(CozyTheme.roseAccent)
+
+            if preferences.dailyCupPromptEnabled || activeCup != nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(
+                        isAddFriendly
+                            ? (activeCup.map { "Today: \($0) \($0 == 1 ? "hour" : "hours")" } ?? "Today:")
+                            : (activeCup.map { "Today's cup: \($0) \($0 == 1 ? "hour" : "hours") (resets at 4:00 AM)" }
+                                ?? "Today's cup not set yet — tap a number:")
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(CozyTheme.inkPrimary)
+
+                    HStack(spacing: 6) {
+                        ForEach(0...5, id: \.self) { level in
+                            let isSelected = activeCup == level
+                            Button {
+                                preferences.recordCupCheckIn(hours: level, for: logicalToday)
+                                try? modelContext.save()
+                                onScheduleSettingsChanged()
+                            } label: {
+                                Text("\(level)h")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(isSelected ? .white : CozyTheme.inkPrimary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                            .fill(
+                                                isSelected
+                                                    ? AnyShapeStyle(CozyTheme.primaryButtonGradient)
+                                                    : AnyShapeStyle(CozyTheme.softBlushFill)
+                                            )
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+
+            if !isAddFriendly {
+                Text("New tasks default to Light (30 min, Once) and can be edited anytime to adjust duration, Light (+0m), Normal (+30m), or Heavy (+1h) weight, and Hard Deadlines.")
+                    .font(.caption2)
+                    .foregroundStyle(CozyTheme.inkSecondary)
+            }
+        }
+        .padding(18)
+        .cozyCard()
+    }
+
+    // MARK: - Unified Auto-Sync All Changes (Google & Apple Calendars)
+
+    private var calendarAutoSyncCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(isAddFriendly ? "Calendar Auto-Sync" : "Auto-Sync Calendar Changes", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                    .foregroundStyle(CozyTheme.deepRose)
+                Spacer()
+                if googleService.isSyncing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(CozyTheme.roseAccent)
+                }
+            }
+
+            Toggle(isOn: Binding(
+                get: { preferences.autoSyncCalendarChanges },
+                set: { enabled in
+                    preferences.autoSyncCalendarChanges = enabled
+                    try? modelContext.save()
+                    if enabled {
+                        onScheduleSettingsChanged()
+                    }
+                }
+            )) {
+                settingToggleLabel(
+                    isAddFriendly ? "Auto-Sync Changes" : "Auto-Sync All Task & Schedule Changes",
+                    detail: "Automatically syncs new tasks, edits, check-offs (✅), moves, deletions, and rebalances to Google and/or Apple Calendars."
+                )
+            }
+            .tint(CozyTheme.roseAccent)
+
+            Divider().overlay(CozyTheme.cardBorder)
+
+            Toggle(isOn: Binding(
+                get: { preferences.pushTasksToAppleCalendar },
+                set: { enabled in
+                    Task { @MainActor in
+                        if enabled {
+                            let granted = await CalendarFreeTimeService.shared.requestAccess()
+                            preferences.pushTasksToAppleCalendar = granted
+                        } else {
+                            preferences.pushTasksToAppleCalendar = false
+                        }
+                        try? modelContext.save()
+                        onScheduleSettingsChanged()
+                    }
+                }
+            )) {
+                settingToggleLabel(
+                    "Sync Tasks to Apple Calendar",
+                    detail: "Pushes and updates scheduled Cozy tasks directly on your iPhone / iCloud Calendar."
+                )
+            }
+            .tint(CozyTheme.roseAccent)
+
+            Toggle(isOn: Binding(
+                get: { preferences.pushTasksToGoogleCalendar },
+                set: { enabled in
+                    Task { @MainActor in
+                        if enabled && preferences.googleSyncMode == .iosGoogleAccount {
+                            _ = await CalendarFreeTimeService.shared.requestAccess()
+                        }
+                        preferences.pushTasksToGoogleCalendar = enabled
+                        try? modelContext.save()
+                        onScheduleSettingsChanged()
+                    }
+                }
+            )) {
+                settingToggleLabel(
+                    "Sync Tasks to Google Calendar",
+                    detail: "Pushes and updates scheduled Cozy tasks on Google Calendar (via OAuth 2.0 or iPhone Account Bridge)."
+                )
+            }
+            .tint(CozyTheme.roseAccent)
+
+            if preferences.hasAnyCalendarPushEnabled {
+                Stepper(
+                    isAddFriendly
+                        ? "Start hour: \(preferences.googleTaskPushStartHour):00"
+                        : "Preferred task time slot: \(preferences.googleTaskPushStartHour):00",
+                    value: Binding(
+                        get: { preferences.googleTaskPushStartHour },
+                        set: { val in
+                            preferences.googleTaskPushStartHour = max(6, min(22, val))
+                            try? modelContext.save()
+                            onScheduleSettingsChanged()
+                        }
+                    ),
+                    in: 6...22
+                )
+                .font(.caption.weight(.medium))
+            }
+
+            if preferences.hasAnyCalendarIntegrationEnabled {
+                Button {
+                    Task { @MainActor in
+                        _ = await googleService.syncCalendarsAndRebalance(
+                            context: modelContext,
+                            preferences: preferences,
+                            referenceDate: DateHelpers.logicalToday()
+                        )
+                        onScheduleSettingsChanged()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                        Text(googleService.isSyncing ? "Syncing…" : (isAddFriendly ? "Sync Now" : "Sync Enabled Calendars Now"))
+                            .fontWeight(.semibold)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(
+                        RoundedRectangle(cornerRadius: 15, style: .continuous)
+                            .fill(CozyTheme.primaryButtonGradient)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(googleService.isSyncing)
+            }
+        }
+        .padding(18)
+        .cozyCard()
+    }
+
     // MARK: - Weekday Free-Time Budgets
 
     private var weekdayBudgetsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Daily Free-Time Budgets", systemImage: "clock.badge.checkmark")
+            Label(isAddFriendly ? "Weekday Hours" : "Predicted Upcoming Free-Time Budgets", systemImage: "clock.badge.checkmark")
                 .font(.system(.subheadline, design: .rounded, weight: .bold))
                 .foregroundStyle(CozyTheme.deepRose)
 
-            Text("How much calm task time you generally have on each day of the week. Flexible tasks automatically gravitate toward days with more open time.")
-                .font(.caption)
-                .foregroundStyle(CozyTheme.inkSecondary)
+            if !isAddFriendly {
+                Text("Used to predict upcoming tasks on future calendar days before each morning's 0–5h Cup check-in.")
+                    .font(.caption)
+                    .foregroundStyle(CozyTheme.inkSecondary)
+            }
 
             ForEach(orderedWeekdays, id: \.self) { weekday in
                 let minutes = preferences.baseBudgetMinutes(forWeekday: weekday)
@@ -107,12 +455,12 @@ struct CozySettingsView: View {
 
     private var singleDayOverridesCard: some View {
         let upcomingOverrides = overrides
-            .filter { $0.date >= DateHelpers.startOfDay(for: Date()) }
+            .filter { $0.date >= DateHelpers.logicalToday() }
             .sorted { $0.date < $1.date }
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Single-Day Overrides", systemImage: "sparkles")
+                Label(isAddFriendly ? "Day Overrides" : "Single-Day Overrides", systemImage: "sparkles")
                     .font(.system(.subheadline, design: .rounded, weight: .bold))
                     .foregroundStyle(CozyTheme.deepRose)
                 Spacer()
@@ -130,9 +478,11 @@ struct CozySettingsView: View {
             }
 
             if upcomingOverrides.isEmpty {
-                Text("Going on a trip or having a cozy day off? Add a one-day free-time override anytime.")
-                    .font(.caption)
-                    .foregroundStyle(CozyTheme.inkSecondary)
+                if !isAddFriendly {
+                    Text("Going on a trip or having a day off? Add a one-day free-time override anytime.")
+                        .font(.caption)
+                        .foregroundStyle(CozyTheme.inkSecondary)
+                }
             } else {
                 ForEach(upcomingOverrides) { item in
                     HStack {
@@ -140,7 +490,7 @@ struct CozySettingsView: View {
                             Text(DateHelpers.fullHeaderDateString(for: item.date))
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(CozyTheme.inkPrimary)
-                            if !item.note.isEmpty {
+                            if !isAddFriendly && !item.note.isEmpty {
                                 Text(item.note)
                                     .font(.caption)
                                     .foregroundStyle(CozyTheme.inkSecondary)
@@ -179,25 +529,31 @@ struct CozySettingsView: View {
     // MARK: - Native Siri & Apple Shortcuts Voice Commands
 
     private var siriVoiceCommandsCard: some View {
-        let phrases: [(String, String)] = [
-            ("“Hey Siri, add a task in Cozy Tasks”", "Prompts for title, frequency (Once, Daily, Weekly, Monthly) & duration, then places it on a freer day."),
-            ("“Hey Siri, complete a task in Cozy Tasks”", "Checks off any daily or bonus task and announces Silver / Gold PERFECT streak milestones."),
-            ("“Hey Siri, what's on my Cozy Tasks today?”", "Reads out your remaining checklist items, bonus slots, and minutes."),
-            ("“Hey Siri, check my streak in Cozy Tasks”", "Speaks your current Gold/Silver streak and longest recorded streak."),
-            ("“Hey Siri, sync Google Calendar in Cozy Tasks”", "Merges Google Calendar events, rebalances tasks, and pushes scheduled blocks.")
+        var phrases: [(String, String)] = [
+            ("“Hey Siri, add a Cozy task to take out the trash”", "Adds a Light 30-minute Once task and places it on a freer day."),
+            ("“Hey Siri, add a heavy 1-hour Cozy task to take out the trash”", "Automatically parses weight (Light/Normal/Heavy), duration, and frequency."),
+            ("“Hey Siri, set my cup in Cozy”", "Sets how full your cup is today (0 to 5 hours) and rebalances tasks."),
+            ("“Hey Siri, complete a task in Cozy”", "Checks off any task on your list."),
+            ("“Hey Siri, what's on my Cozy today?”", "Reads out your remaining checklist items and time."),
+            ("“Hey Siri, sync calendars in Cozy”", "Syncs Google and Apple Calendars and rebalances.")
         ]
+        if preferences.streaksEnabled {
+            phrases.append(("“Hey Siri, check my streak in Cozy”", "Speaks your current and longest recorded streak."))
+        }
 
         return VStack(alignment: .leading, spacing: 12) {
-            Label("Siri & Shortcuts Voice Commands", systemImage: "waveform.and.mic")
+            Label(isAddFriendly ? "Siri Commands" : "Siri & Shortcuts Voice Commands", systemImage: "waveform.and.mic")
                 .font(.system(.subheadline, design: .rounded, weight: .bold))
                 .foregroundStyle(CozyTheme.deepRose)
 
-            Text("Ready out-of-the-box with Apple App Intents—no external API keys required.")
-                .font(.caption)
-                .foregroundStyle(CozyTheme.inkSecondary)
+            if !isAddFriendly {
+                Text("Say “Cozy” with Siri—new tasks default to Light (30m) or parse weight & duration directly from your phrase.")
+                    .font(.caption)
+                    .foregroundStyle(CozyTheme.inkSecondary)
 
-            SiriTipView(intent: AddCozyTaskIntent())
-                .siriTipViewStyle(.automatic)
+                SiriTipView(intent: AddCozyTaskIntent())
+                    .siriTipViewStyle(.automatic)
+            }
 
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(phrases, id: \.0) { phrase, detail in
@@ -205,12 +561,14 @@ struct CozySettingsView: View {
                         Text(phrase)
                             .font(.caption.weight(.bold))
                             .foregroundStyle(CozyTheme.inkPrimary)
-                        Text(detail)
-                            .font(.caption2)
-                            .foregroundStyle(CozyTheme.inkSecondary)
+                        if !isAddFriendly {
+                            Text(detail)
+                                .font(.caption2)
+                                .foregroundStyle(CozyTheme.inkSecondary)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
+                    .padding(isAddFriendly ? 8 : 10)
                     .background(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .fill(CozyTheme.canvasMiddle)
@@ -227,7 +585,7 @@ struct CozySettingsView: View {
     private var googleCalendarSyncCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Label("Google Calendar Two-Way Sync", systemImage: "arrow.triangle.2.circlepath.circle.fill")
+                Label(isAddFriendly ? "Google Calendar" : "Google Calendar Two-Way Sync", systemImage: "arrow.triangle.2.circlepath.circle.fill")
                     .font(.system(.subheadline, design: .rounded, weight: .bold))
                     .foregroundStyle(CozyTheme.deepRose)
                 Spacer()
@@ -238,9 +596,11 @@ struct CozySettingsView: View {
                 }
             }
 
-            Text("Reads busy Google Calendar blocks to merge into free-time calculations, and pushes/updates scheduled Cozy Tasks back onto Google Calendar.")
-                .font(.caption)
-                .foregroundStyle(CozyTheme.inkSecondary)
+            if !isAddFriendly {
+                Text("Reads busy Google Calendar blocks to merge into free-time calculations, and pushes/updates scheduled Cozy tasks back onto Google Calendar.")
+                    .font(.caption)
+                    .foregroundStyle(CozyTheme.inkSecondary)
+            }
 
             Picker("Connection Mode", selection: Binding(
                 get: { preferences.googleSyncMode },
@@ -256,9 +616,11 @@ struct CozySettingsView: View {
             }
             .pickerStyle(.segmented)
 
-            Text(preferences.googleSyncMode.subtitle)
-                .font(.caption2)
-                .foregroundStyle(CozyTheme.inkSecondary)
+            if !isAddFriendly {
+                Text(preferences.googleSyncMode.subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(CozyTheme.inkSecondary)
+            }
 
             if preferences.googleSyncMode == .oauthREST {
                 googleOAuthConfigSection
@@ -282,14 +644,10 @@ struct CozySettingsView: View {
                     }
                 }
             )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Read & Merge Google Busy Events")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(CozyTheme.inkPrimary)
-                    Text("Unions overlapping Google + Apple Calendar events so busy days automatically get lighter task loads.")
-                        .font(.caption)
-                        .foregroundStyle(CozyTheme.inkSecondary)
-                }
+                settingToggleLabel(
+                    "Read & Merge Google Busy Events",
+                    detail: "Unions overlapping Google + Apple Calendar events so busy days automatically get lighter task loads."
+                )
             }
             .tint(CozyTheme.roseAccent)
 
@@ -307,20 +665,18 @@ struct CozySettingsView: View {
                     }
                 }
             )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Push & Merge Scheduled Tasks")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(CozyTheme.inkPrimary)
-                    Text("Creates and updates Cozy Tasks in open Google Calendar slots—moving them when rebalanced and marking ✅ when completed.")
-                        .font(.caption)
-                        .foregroundStyle(CozyTheme.inkSecondary)
-                }
+                settingToggleLabel(
+                    "Push & Merge Scheduled Tasks",
+                    detail: "Creates and updates Cozy tasks in open Google Calendar slots—moving them when rebalanced and marking ✅ when completed."
+                )
             }
             .tint(CozyTheme.roseAccent)
 
             if preferences.pushTasksToGoogleCalendar {
                 Stepper(
-                    "Preferred task push time: \(preferences.googleTaskPushStartHour):00",
+                    isAddFriendly
+                        ? "Start hour: \(preferences.googleTaskPushStartHour):00"
+                        : "Preferred task push time: \(preferences.googleTaskPushStartHour):00",
                     value: Binding(
                         get: { preferences.googleTaskPushStartHour },
                         set: { val in
@@ -345,14 +701,14 @@ struct CozySettingsView: View {
                     _ = await googleService.syncCalendarsAndRebalance(
                         context: modelContext,
                         preferences: preferences,
-                        referenceDate: Date()
+                        referenceDate: DateHelpers.logicalToday()
                     )
                     onScheduleSettingsChanged()
                 }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.triangle.2.circlepath")
-                    Text(googleService.isSyncing ? "Syncing & Merging…" : "Sync & Merge Google Calendar Now")
+                    Text(googleService.isSyncing ? "Syncing…" : (isAddFriendly ? "Sync Google Calendar" : "Sync & Merge Google Calendar Now"))
                         .fontWeight(.semibold)
                 }
                 .font(.subheadline)
@@ -491,7 +847,7 @@ struct CozySettingsView: View {
                         onScheduleSettingsChanged()
                     }
                 } label: {
-                    Label("Grant Calendar Access for Google Bridge", systemImage: "lock.open.fill")
+                    Label(isAddFriendly ? "Grant Calendar Access" : "Grant Calendar Access for Google Bridge", systemImage: "lock.open.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(CozyTheme.deepRose)
                         .padding(.horizontal, 12)
@@ -500,9 +856,13 @@ struct CozySettingsView: View {
                 }
                 .buttonStyle(.plain)
             } else if detected.isEmpty {
-                Text("Add your Gmail account in iPhone Settings → Calendar → Accounts to sync automatically without an OAuth Client ID.")
-                    .font(.caption2)
-                    .foregroundStyle(CozyTheme.inkSecondary)
+                Text(
+                    isAddFriendly
+                        ? "Add Gmail in iPhone Settings → Calendar → Accounts."
+                        : "Add your Gmail account in iPhone Settings → Calendar → Accounts to sync automatically without an OAuth Client ID."
+                )
+                .font(.caption2)
+                .foregroundStyle(CozyTheme.inkSecondary)
             } else {
                 Label(
                     "Detected \(detected.count) Google calendar\(detected.count == 1 ? "" : "s"): \(detected.map(\.title).joined(separator: ", "))",
@@ -514,10 +874,25 @@ struct CozySettingsView: View {
         }
     }
 
-    // MARK: - Optional Apple Calendar Sync
+    // MARK: - Apple Calendar Two-Way Sync
 
     private var calendarSyncCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let appleCalendars = CalendarFreeTimeService.shared.writableAppleCalendars()
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(isAddFriendly ? "Apple Calendar" : "Apple Calendar Two-Way Sync", systemImage: "calendar")
+                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                    .foregroundStyle(CozyTheme.deepRose)
+                Spacer()
+                Text(CalendarFreeTimeService.shared.hasReadAccess ? "Authorized" : "iPhone / iCloud")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(CozyTheme.deepRose)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(CozyTheme.softBlushFill))
+            }
+
             Toggle(isOn: Binding(
                 get: { preferences.useCalendarSync },
                 set: { enabled in
@@ -533,20 +908,86 @@ struct CozySettingsView: View {
                     }
                 }
             )) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Label("Apple Calendar Busy-Time Sync", systemImage: "calendar")
-                        .font(.system(.subheadline, design: .rounded, weight: .bold))
-                        .foregroundStyle(CozyTheme.deepRose)
-                    Text("Deducts busy events on your iPhone calendar so packed days stay lighter.")
-                        .font(.caption)
-                        .foregroundStyle(CozyTheme.inkSecondary)
-                }
+                settingToggleLabel(
+                    "Read & Deduct Apple Busy Events",
+                    detail: "Deducts busy events on your iPhone / iCloud calendar so packed days stay lighter."
+                )
             }
             .tint(CozyTheme.roseAccent)
+
+            Toggle(isOn: Binding(
+                get: { preferences.pushTasksToAppleCalendar },
+                set: { enabled in
+                    Task { @MainActor in
+                        if enabled {
+                            let granted = await CalendarFreeTimeService.shared.requestAccess()
+                            preferences.pushTasksToAppleCalendar = granted
+                        } else {
+                            preferences.pushTasksToAppleCalendar = false
+                        }
+                        try? modelContext.save()
+                        onScheduleSettingsChanged()
+                    }
+                }
+            )) {
+                settingToggleLabel(
+                    isAddFriendly ? "Push Tasks to Apple Calendar" : "Push & Sync Scheduled Tasks to Apple Calendar",
+                    detail: "Creates, updates, and cleans up Cozy tasks on your iPhone Calendar—moving them when rebalanced and marking ✅ when completed."
+                )
+            }
+            .tint(CozyTheme.roseAccent)
+
+            if preferences.pushTasksToAppleCalendar && CalendarFreeTimeService.shared.hasReadAccess && !appleCalendars.isEmpty {
+                Picker("Target Apple Calendar", selection: Binding(
+                    get: { preferences.appleTargetCalendarIdentifier },
+                    set: { id in
+                        preferences.appleTargetCalendarIdentifier = id
+                        try? modelContext.save()
+                        onScheduleSettingsChanged()
+                    }
+                )) {
+                    Text("Default iPhone Calendar").tag("")
+                    ForEach(appleCalendars, id: \.calendarIdentifier) { cal in
+                        Text(cal.title).tag(cal.calendarIdentifier)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(CozyTheme.deepRose)
+                .font(.subheadline)
+            }
 
             if preferences.useCalendarSync {
                 Divider().overlay(CozyTheme.cardBorder)
                 calendarDeductionControls
+            }
+
+            if preferences.useCalendarSync || preferences.pushTasksToAppleCalendar {
+                Button {
+                    Task { @MainActor in
+                        _ = await googleService.syncCalendarsAndRebalance(
+                            context: modelContext,
+                            preferences: preferences,
+                            referenceDate: DateHelpers.logicalToday()
+                        )
+                        onScheduleSettingsChanged()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                        Text(googleService.isSyncing ? "Syncing…" : (isAddFriendly ? "Sync Apple Calendar" : "Sync Apple Calendar Now"))
+                            .fontWeight(.semibold)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(CozyTheme.primaryButtonGradient)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(googleService.isSyncing)
             }
         }
         .padding(18)
@@ -571,9 +1012,11 @@ struct CozySettingsView: View {
         .tint(CozyTheme.deepRose)
         .font(.subheadline)
 
-        Text(preferences.calendarDeductionMode.subtitle)
-            .font(.caption2)
-            .foregroundStyle(CozyTheme.inkSecondary)
+        if !isAddFriendly {
+            Text(preferences.calendarDeductionMode.subtitle)
+                .font(.caption2)
+                .foregroundStyle(CozyTheme.inkSecondary)
+        }
 
         HStack {
             Stepper(
@@ -612,7 +1055,7 @@ struct CozySettingsView: View {
 
     private var notificationsCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Summary Notifications", systemImage: "bell.badge.fill")
+            Label(isAddFriendly ? "Notifications" : "Summary Notifications", systemImage: "bell.badge.fill")
                 .font(.system(.subheadline, design: .rounded, weight: .bold))
                 .foregroundStyle(CozyTheme.deepRose)
 
@@ -625,20 +1068,16 @@ struct CozySettingsView: View {
                     onNotificationSettingsChanged()
                 }
             )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("End-of-Day Accomplishment Summary")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(CozyTheme.inkPrimary)
-                    Text("Evening recap of everything you checked off today.")
-                        .font(.caption)
-                        .foregroundStyle(CozyTheme.inkSecondary)
-                }
+                settingToggleLabel(
+                    isAddFriendly ? "Daily Summary" : "End-of-Day Accomplishment Summary",
+                    detail: "Evening recap of everything you checked off today."
+                )
             }
             .tint(CozyTheme.roseAccent)
 
             if preferences.dailySummaryEnabled {
                 DatePicker(
-                    "Evening Notification Time",
+                    isAddFriendly ? "Time" : "Evening Notification Time",
                     selection: timeBinding(
                         hour: Binding(
                             get: { preferences.dailySummaryHour },
@@ -666,14 +1105,10 @@ struct CozySettingsView: View {
                     onNotificationSettingsChanged()
                 }
             )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Weekly Reflection Notification")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(CozyTheme.inkPrimary)
-                    Text("Optional weekly wrap-up celebrating your completed tasks.")
-                        .font(.caption)
-                        .foregroundStyle(CozyTheme.inkSecondary)
-                }
+                settingToggleLabel(
+                    isAddFriendly ? "Weekly Summary" : "Weekly Reflection Notification",
+                    detail: "Optional weekly wrap-up celebrating your completed tasks."
+                )
             }
             .tint(CozyTheme.roseAccent)
 
@@ -726,14 +1161,10 @@ struct CozySettingsView: View {
                     onNotificationSettingsChanged()
                 }
             )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Monthly Celebration Notification")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(CozyTheme.inkPrimary)
-                    Text("Optional monthly milestone summary of your cozy progress.")
-                        .font(.caption)
-                        .foregroundStyle(CozyTheme.inkSecondary)
-                }
+                settingToggleLabel(
+                    isAddFriendly ? "Monthly Summary" : "Monthly Celebration Notification",
+                    detail: "Optional monthly milestone summary of your progress."
+                )
             }
             .tint(CozyTheme.roseAccent)
 
@@ -777,13 +1208,13 @@ struct CozySettingsView: View {
                 Task { @MainActor in
                     let ok = await NotificationManager.shared.sendTestSummaryNotification(occurrences: occurrences)
                     testNotificationStatusMessage = ok
-                        ? "Test summary scheduled! Watch for the banner in ~3 seconds 🌸"
-                        : "Please enable notifications for CozyProductivity in iPhone Settings."
+                        ? (isAddFriendly ? "Test summary scheduled (3s)." : "Test summary scheduled! Watch for the banner in ~3 seconds 🌸")
+                        : "Please enable notifications for Cozy in iPhone Settings."
                 }
             } label: {
                 HStack {
                     Image(systemName: "paperplane.fill")
-                    Text("Send Test Today Summary (3s)")
+                    Text(isAddFriendly ? "Test Summary (3s)" : "Send Test Today Summary (3s)")
                         .fontWeight(.semibold)
                 }
                 .font(.subheadline)

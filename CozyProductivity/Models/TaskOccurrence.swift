@@ -22,10 +22,17 @@ final class TaskOccurrence {
     var bonusForDate: Date? = nil
     var bonusSlot: Int = 0
 
-    /// Identifiers for two-way Google Calendar push/merge so rebalanced or completed tasks update in place without duplicating.
+    /// Identifiers for two-way Google & Apple Calendar push/merge so rebalanced, edited, or completed tasks update in place without duplicating.
     var googleCalendarEventId: String? = nil
     var syncedEKEventIdentifier: String? = nil
     var lastCalendarSyncSignature: String? = nil
+    var appleCalendarEventIdentifier: String? = nil
+    var lastAppleCalendarSyncSignature: String? = nil
+
+    /// Task weight snapshot & optional per-occurrence override.
+    var weightSnapshotRaw: String = TaskWeight.light.rawValue
+    var hasCustomWeightOverride: Bool = false
+    var hardDeadlineSnapshot: Date? = nil
 
     /// Snapshot fields preserved for history/summaries even if a template is later renamed or deleted.
     var titleSnapshot: String
@@ -46,6 +53,9 @@ final class TaskOccurrence {
         googleCalendarEventId: String? = nil,
         syncedEKEventIdentifier: String? = nil,
         lastCalendarSyncSignature: String? = nil,
+        appleCalendarEventIdentifier: String? = nil,
+        lastAppleCalendarSyncSignature: String? = nil,
+        weightOverride: TaskWeight? = nil,
         template: TaskTemplate
     ) {
         self.id = id
@@ -59,6 +69,11 @@ final class TaskOccurrence {
         self.googleCalendarEventId = googleCalendarEventId
         self.syncedEKEventIdentifier = syncedEKEventIdentifier
         self.lastCalendarSyncSignature = lastCalendarSyncSignature
+        self.appleCalendarEventIdentifier = appleCalendarEventIdentifier
+        self.lastAppleCalendarSyncSignature = lastAppleCalendarSyncSignature
+        self.weightSnapshotRaw = (weightOverride ?? template.weight).rawValue
+        self.hasCustomWeightOverride = weightOverride != nil
+        self.hardDeadlineSnapshot = template.normalizedHardDeadline()
         self.titleSnapshot = template.title
         self.emojiSnapshot = template.emoji
         self.durationMinutesSnapshot = template.durationMinutes
@@ -95,6 +110,36 @@ final class TaskOccurrence {
 
     var displayDurationMinutes: Int {
         template?.durationMinutes ?? durationMinutesSnapshot
+    }
+
+    var displayWeight: TaskWeight {
+        if hasCustomWeightOverride {
+            return TaskWeight(rawValue: weightSnapshotRaw) ?? .light
+        }
+        if let template {
+            return template.weight
+        }
+        return TaskWeight(rawValue: weightSnapshotRaw) ?? .light
+    }
+
+    /// Effective ranking & cup load minutes (`duration` + `0m` light / `+30m` normal / `+60m` heavy).
+    var effectiveLoadMinutes: Int {
+        displayDurationMinutes + displayWeight.extraRankingMinutes
+    }
+
+    func effectiveHardDeadline(calendar: Calendar = DateHelpers.calendar) -> Date? {
+        if let template {
+            return template.normalizedHardDeadline(calendar: calendar)
+        }
+        return hardDeadlineSnapshot.map { DateHelpers.startOfDay(for: $0, calendar: calendar) }
+    }
+
+    func applyWeightAdjustment(_ newWeight: TaskWeight, updateTemplate: Bool = true) {
+        weightSnapshotRaw = newWeight.rawValue
+        hasCustomWeightOverride = true
+        if updateTemplate {
+            template?.weight = newWeight
+        }
     }
 
     var displayNotes: String {

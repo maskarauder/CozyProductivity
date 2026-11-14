@@ -6,6 +6,7 @@ struct DayOverrideSheet: View {
     @Environment(\.modelContext) private var modelContext
 
     let existingOverrides: [DayCapacityOverride]
+    var addFriendlyMode: Bool = false
     var onSaved: () -> Void
 
     @State private var selectedDate: Date = DateHelpers.addDays(1, to: Date())
@@ -17,7 +18,7 @@ struct DayOverrideSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text("Custom Day Free Time")
+                        Text(addFriendlyMode ? "Free Time" : "Custom Day Free Time")
                             .font(.system(.subheadline, design: .rounded, weight: .bold))
                             .foregroundStyle(CozyTheme.deepRose)
 
@@ -31,7 +32,7 @@ struct DayOverrideSheet: View {
 
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
-                                Text("Available Free Time")
+                                Text(addFriendlyMode ? "Hours" : "Available Free Time")
                                     .font(.subheadline.weight(.medium))
                                 Spacer()
                                 Text(DateHelpers.formatDuration(minutes: availableMinutes))
@@ -50,18 +51,20 @@ struct DayOverrideSheet: View {
                         }
 
                         HStack(spacing: 8) {
-                            quickPresetButton("Busy Day (0m)", minutes: 0)
-                            quickPresetButton("Light (45m)", minutes: 45)
-                            quickPresetButton("Free Day (4h)", minutes: 240)
+                            quickPresetButton(addFriendlyMode ? "0m" : "Busy Day (0m)", minutes: 0)
+                            quickPresetButton(addFriendlyMode ? "45m" : "Light (45m)", minutes: 45)
+                            quickPresetButton(addFriendlyMode ? "4h" : "Free Day (4h)", minutes: 240)
                         }
 
-                        TextField("Optional note (e.g., Out of town, Cozy Sunday off)", text: $note)
-                            .font(.subheadline)
-                            .padding(12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill(CozyTheme.canvasMiddle)
-                            )
+                        if !addFriendlyMode || !note.isEmpty {
+                            TextField("Optional note", text: $note)
+                                .font(.subheadline)
+                                .padding(12)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .fill(CozyTheme.canvasMiddle)
+                                )
+                        }
                     }
                     .padding(18)
                     .cozyCard()
@@ -69,7 +72,7 @@ struct DayOverrideSheet: View {
                 .padding(18)
             }
             .cozyScreenBackground()
-            .navigationTitle("Single-Day Override")
+            .navigationTitle(addFriendlyMode ? "Day Override" : "Single-Day Override")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

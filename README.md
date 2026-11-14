@@ -1,51 +1,59 @@
-# CozyProductivity 🌸
+# Cozy 🌸
 
-A calm, pastel-pink iPhone task tracking app built natively with **SwiftUI**, **SwiftData**, **AppIntents**, **EventKit**, **AuthenticationServices**, and **UserNotifications** (iOS 17+).
+A calm, pastel-pink iPhone task tracking app (**Cozy**) built natively with **SwiftUI**, **SwiftData**, **AppIntents**, **EventKit**, **AuthenticationServices**, and **UserNotifications** (iOS 17+).
 
 ## Features
 
-- **Today's Checklist Cards & Bonus Tasks**:
-  - Tactile pastel cards for the current day with duration badges, recurrence tags, spring animations, and quick actions.
-  - Completing all of today's tasks highlights the day in **Rose Bronze** (or **Pastel Pink**) and unlocks **2 optional bonus tasks** selectable from upcoming tasks within the next 7 days.
-  - Completing **1 bonus task** upgrades the day to **Silver** (preserving your active streak without adding to it).
-  - Completing **both bonus tasks** upgrades the day to **Gold**, firing a massive celebratory confetti barrage and displaying **`PERFECT`** with **`Streak Days X`** underneath (+1 streak).
-- **Month & Year Calendar View + Streak Stats**:
-  - Browse any month or jump back across previous months and years, inspect completed tasks per date, and track your **Current Streak** and **Longest Recorded Streak**.
+- **ADD Friendly Mode (Low-Text Focus Mode)**:
+  - Optional toggle in **Settings** that reduces text across the entire app—cutting out subtitles, emojis, categories, and cozy prose.
+  - In **ADD Friendly Mode**, the *“How full is your cup today?”* dialogue lists **only the hours** (`0 hours` … `5 hours`) with zero extra details.
+- **Optional Gamification (4 Independent Settings)**:
+  - Every gamified element can be individually disabled in **Settings**:
+    - **Streaks**: Show or hide current and longest recorded streak counters, pills, and Siri streak announcements.
+    - **Optional Bonus Tasks**: Show or hide the 2 optional bonus slots from the next 7 days. **When disabled, completing your daily tasks defaults to a Gold day.**
+    - **Day Ranks (`Bronze`, `Silver`, `Gold`)**: Enable or disable Bronze, Silver, and Gold day ranks and `PERFECT` banners across Today, Calendar, and Summaries.
+    - **Confetti**: Enable or disable celebratory pastel confetti bursts when checking off tasks.
+- **Default Light 30-Minute Tasks & Editable Task Weights (`Light`, `Normal`, `Heavy`)**:
+  - New tasks default to **`Light` (`+0m`)**, **`30 minutes`**, and **`Once`**, keeping quick capture effortless.
+  - Edit any task anytime (via **Edit Task** or the card's `•••` menu) to adjust its duration, recurrence, Hard Deadline, or weight (**`Light` (`+0m`)**, **`Normal` (`+30m`)**, or **`Heavy` (`+1h`)**), automatically rebalancing the day's schedule.
+- **Optional Morning Cup Check-In (*“How full is your cup today?”*) & 4:00 AM Reset**:
+  - Prompts at the start of each day—resetting at **4:00 AM local time**—for an answer from **`0` to `5` hours**, setting that day's available capacity.
+  - Future calendar days continue showing upcoming tasks as predicted, while answering **`0`** gently moves non-deadline tasks back each day.
+  - Disableable anytime from the prompt or **Settings** to use your weekday free-time budgets automatically.
+- **Hard Deadlines**:
+  - Assign an optional **Hard Deadline** to force a task onto/before its deadline even when your daily cup does not have enough hours to fulfill it.
 - **Native Siri & Apple Shortcuts Voice Commands (`AppIntents`)**:
-  - Zero external API keys required—works natively with Siri, Spotlight, and the Shortcuts app:
-    - *“Hey Siri, add a task in Cozy Tasks”* (prompts for title, **Once** / **Daily** / **Weekly** / **Every 2 Weeks** / **Monthly**, and duration, then distributes onto a freer day).
-    - *“Hey Siri, complete a task in Cozy Tasks”* (checks off daily or bonus tasks and announces Silver / Gold `PERFECT` streak updates).
-    - *“Hey Siri, what's on my Cozy Tasks today?”*
-    - *“Hey Siri, check my streak in Cozy Tasks”*
-    - *“Hey Siri, sync Google Calendar in Cozy Tasks”*
-- **Two-Way Google Calendar + Apple Calendar Sync**:
-  - **Read & Union-Merge Busy Events**: Reads busy intervals from **Google Calendar** (via native OAuth 2.0 PKCE against Google Calendar REST API v3 *or* zero-setup iPhone Google Account Bridge) and **Apple Calendar (`EventKit`)**, union-merging overlapping meetings so overlapping events across both calendars are never double-counted.
-  - **Push & Merge Scheduled Tasks**: Pushes scheduled Cozy Tasks back onto Google Calendar in non-overlapping open slots, updating events in place (`PATCH`) when `SmartScheduler` moves a task to a freer day and marking titles with `✅` when completed—while filtering Cozy's own pushed events out of external busy-time reads to prevent self-feedback loops.
-- **Flexible Recurring & Once Tasks (`SmartScheduler`)**:
-  - Supports **Once**, **Daily**, **Weekly**, **Every 2 Weeks**, **Monthly**, and **Custom (Every N Days)** tasks, each with a configurable duration.
-  - Guilt-free end-of-day rollover: unfinished weekly, monthly, and once tasks automatically redistribute to upcoming free days without piling up missed daily habits.
-- **Summary Notifications**:
-  - **End-of-Day Notification**: Summarizes every task and total minutes you completed that day.
-  - **Optional Weekly & Monthly Notifications**: Celebrates your broader rhythm and completed tasks across the week or month.
+  - Zero external API keys required—uses the **`Cozy`** app name natively with Siri, Spotlight, and Shortcuts:
+    - *“Hey Siri, add a Cozy task to take out the trash”* (creates a default **Light**, **30-minute**, **Once** task and places it on a freer day).
+    - *“Hey Siri, add a heavy 1-hour Cozy task to take out the trash”* / *“Add a heavy 1-hour task to take out the trash”* (`SiriTaskPhraseParser` extracts weight, duration, and frequency directly from natural speech).
+    - *“Hey Siri, set my cup in Cozy”*
+    - *“Hey Siri, complete a task in Cozy”*
+    - *“Hey Siri, what's on my Cozy today?”*
+    - *“Hey Siri, check my streak in Cozy”*
+    - *“Hey Siri, sync calendars in Cozy”*
+- **Today's Checklist Cards, Month/Year Calendar & Summaries**:
+  - Tactile pastel checklist cards for Today, full Month/Year Calendar navigation with day highlights, and End-of-Day + optional Weekly & Monthly summary notifications.
+- **Auto-Sync All Changes to Google and/or Apple Calendars**:
+  - Automatically syncs task additions, edits, check-offs (`✅`), moves, deletions, and schedule rebalances to **Google Calendar** (OAuth 2.0 PKCE or iPhone Account Bridge) and/or **Apple Calendar (`EventKit`)**, while union-merging external busy events without self-feedback loops.
 
 ## Project Structure
 
 ```text
 CozyProductivity/
-├── App/          # @main App entry point, RootTabView two-way calendar + notification orchestration
+├── App/          # @main App entry point, RootTabView 4 AM Cup prompt + calendar + notification orchestration
 ├── Theme/        # CozyTheme pastel pink palette, Bronze/Silver/Gold medal gradients & modifiers
-├── Models/       # SwiftData @Model definitions (TaskTemplate, TaskOccurrence, CozyPreferences, DayCapacityOverride)
+├── Models/       # SwiftData @Model definitions (TaskTemplate, TaskOccurrence, CozyPreferences, DayCapacityOverride, TaskWeight)
 ├── Services/     # SmartScheduler, StreakAndBonusService, GoogleCalendarService, CalendarFreeTimeService, KeychainHelper, CozyModelContainer, SummaryBuilder, NotificationManager, DateHelpers
-├── Intents/      # CozyShortcuts (Siri AppIntents, TodayTaskEntityQuery & CozyAppShortcutsProvider)
-├── Views/        # TodayChecklistView, MonthCalendarView, ConfettiCelebrationOverlay, ScheduleOverviewView, TaskEditorSheet, ReflectionsView, CozySettingsView
+├── Intents/      # CozyShortcuts (Siri AppIntents + SiriTaskPhraseParser for natural weight/duration voice capture)
+├── Views/        # TodayChecklistView, DailyCupPromptSheet, MonthCalendarView, ConfettiCelebrationOverlay, ScheduleOverviewView, TaskEditorSheet, ReflectionsView, CozySettingsView
 └── Assets.xcassets/ # Pastel rose AccentColor & 1024x1024 AppIcon
 CozyProductivityTests/
-└── SmartSchedulerTests.swift # Unit tests for load balancing, Bronze/Silver/Gold streaks, Google+Apple Calendar union merge & Google API sync payloads
+└── SmartSchedulerTests.swift # Unit tests for Light 30m defaults, Siri phrase parsing, optional gamification & Gold default, 4 AM cup reset, weights, hard deadlines & calendar sync
 ```
 
 ## Getting Started in Xcode
 
 1. Open `CozyProductivity.xcodeproj` in **Xcode 15 / 16+**.
-2. Select the **CozyProductivity** scheme and choose an iPhone simulator (iOS 17.0+) or your physical iPhone (set your Development Team under *Signing & Capabilities* if deploying to hardware).
-3. *(Optional for Direct Google OAuth PKCE)*: Either use the built-in **iPhone Google Account Bridge** (zero configuration if Gmail is signed into *iPhone Settings → Calendar → Accounts*) or create an **iOS OAuth 2.0 Client ID** in Google Cloud Console with the Google Calendar API enabled and paste the Client ID into *Settings → Google Calendar Two-Way Sync* (adding the reversed Client ID URL scheme `com.googleusercontent.apps.<YOUR_PREFIX>` under *Target → Info → URL Types*).
+2. Select the **CozyProductivity** scheme (display name on iPhone: **Cozy**) and choose an iPhone simulator (iOS 17.0+) or your physical iPhone (set your Development Team under *Signing & Capabilities* if deploying to hardware).
+3. *(Optional for Direct Google OAuth PKCE)*: Either use the built-in **iPhone Google Account Bridge** (zero configuration if Gmail is signed into *iPhone Settings → Calendar → Accounts*) or create an **iOS OAuth 2.0 Client ID** in Google Cloud Console with the Google Calendar API enabled and paste the Client ID into *Settings → Google Calendar* (adding the reversed Client ID URL scheme `com.googleusercontent.apps.<YOUR_PREFIX>` under *Target → Info → URL Types*).
 4. Press **⌘R** to build and run, or **⌘U** to run the unit tests in `CozyProductivityTests`.

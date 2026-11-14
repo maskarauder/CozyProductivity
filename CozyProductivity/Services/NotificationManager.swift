@@ -143,7 +143,7 @@ final class NotificationManager {
                     content.body = digest.notificationBody
                 } else {
                     content.title = "Weekly Cozy Reflection 🌷"
-                    content.body = "Open CozyProductivity to see everything you accomplished this week 💖"
+                    content.body = "Open Cozy to see everything you accomplished this week 💖"
                 }
 
                 let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: fireDate)

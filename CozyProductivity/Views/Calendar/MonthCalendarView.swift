@@ -9,16 +9,17 @@ struct MonthCalendarView: View {
 
     @State private var displayedMonthStart: Date = {
         let cal = DateHelpers.calendar
-        let comps = cal.dateComponents([.year, .month], from: Date())
-        return cal.date(from: comps) ?? DateHelpers.startOfDay(for: Date())
+        let logical = DateHelpers.logicalToday(calendar: cal)
+        let comps = cal.dateComponents([.year, .month], from: logical)
+        return cal.date(from: comps) ?? logical
     }()
 
-    @State private var selectedDate: Date = DateHelpers.startOfDay(for: Date())
+    @State private var selectedDate: Date = DateHelpers.logicalToday()
     @State private var showingMonthYearPicker = false
-    @State private var pickerYear: Int = DateHelpers.calendar.component(.year, from: Date())
+    @State private var pickerYear: Int = DateHelpers.calendar.component(.year, from: DateHelpers.logicalToday())
 
     private var today: Date {
-        DateHelpers.startOfDay(for: Date())
+        DateHelpers.logicalToday()
     }
 
     private var calendar: Calendar {
@@ -29,6 +30,7 @@ struct MonthCalendarView: View {
         StreakAndBonusService.evaluate(
             occurrences: occurrences,
             persistedLongestStreak: preferences.longestRecordedStreak,
+            optionalBonusTasksEnabled: preferences.optionalBonusTasksEnabled,
             today: today,
             calendar: calendar
         )
@@ -36,6 +38,10 @@ struct MonthCalendarView: View {
 
     private var baseStyle: BaseHighlightColorStyle {
         preferences.baseHighlightStyle
+    }
+
+    private var isADDFriendly: Bool {
+        preferences.addFriendlyMode
     }
 
     private var isDisplayingCurrentMonth: Bool {
@@ -47,10 +53,12 @@ struct MonthCalendarView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: isADDFriendly ? 14 : 18) {
                     headerSection
 
-                    streakStatsCard
+                    if preferences.streaksEnabled {
+                        streakStatsCard
+                    }
 
                     monthCalendarCard
 
@@ -73,12 +81,18 @@ struct MonthCalendarView: View {
     private var headerSection: some View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
-                Text("Cozy Calendar")
+                Text(isADDFriendly ? "Calendar" : "Cozy Calendar")
                     .font(.system(.title2, design: .rounded, weight: .bold))
                     .foregroundStyle(CozyTheme.inkPrimary)
-                Text("Browse months & years to celebrate your streak history")
+                if !isADDFriendly {
+                    Text(
+                        preferences.streaksEnabled
+                            ? "Browse months & years to celebrate your streak history"
+                            : "Browse past & predicted task schedules across months"
+                    )
                     .font(.footnote)
                     .foregroundStyle(CozyTheme.inkSecondary)
+                }
             }
             Spacer()
             if !isDisplayingCurrentMonth {
@@ -107,7 +121,7 @@ struct MonthCalendarView: View {
                     iconColor: CozyTheme.goldBorder,
                     value: "\(streakSnapshot.currentStreak)",
                     unit: streakSnapshot.currentStreak == 1 ? "day" : "days",
-                    title: "Current Streak"
+                    title: isADDFriendly ? "Current" : "Current Streak"
                 )
 
                 streakMetricBox(
@@ -115,18 +129,22 @@ struct MonthCalendarView: View {
                     iconColor: CozyTheme.deepRose,
                     value: "\(streakSnapshot.longestStreak)",
                     unit: streakSnapshot.longestStreak == 1 ? "day" : "days",
-                    title: "Longest Streak"
+                    title: isADDFriendly ? "Best" : "Longest Streak"
                 )
             }
 
-            HStack(spacing: 10) {
-                Text("🥈 Silver preserves streak")
-                Text("·")
-                Text("🥇 Gold +1 streak")
+            if !isADDFriendly && preferences.dayRanksEnabled {
+                HStack(spacing: 10) {
+                    if preferences.optionalBonusTasksEnabled {
+                        Text("🥈 Silver preserves streak")
+                        Text("·")
+                    }
+                    Text("🥇 Gold +1 streak")
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(CozyTheme.inkSecondary)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(CozyTheme.inkSecondary)
-            .frame(maxWidth: .infinity, alignment: .center)
         }
         .padding(16)
         .background(
@@ -183,6 +201,7 @@ struct MonthCalendarView: View {
     private var monthCalendarCard: some View {
         let gridCells = buildMonthGridCells()
         let monthStats = monthlyMedalCounts(for: gridCells.compactMap { $0 })
+        let showRanks = preferences.dayRanksEnabled
 
         return VStack(alignment: .leading, spacing: 14) {
             // Month / Year Navigation Bar
@@ -255,61 +274,67 @@ struct MonthCalendarView: View {
                 }
             }
 
-            Divider().overlay(CozyTheme.cardBorder)
+            if showRanks {
+                Divider().overlay(CozyTheme.cardBorder)
 
-            // Tier Legend + Base Highlight Color Switcher (Bronze vs Pink)
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 12) {
-                    legendBadge(
-                        gradient: baseStyle.gradient,
-                        border: baseStyle.borderColor,
-                        label: "All Done (\(monthStats.base))"
-                    )
-                    legendBadge(
-                        gradient: CozyTheme.silverGradient,
-                        border: CozyTheme.silverBorder,
-                        label: "Silver (\(monthStats.silver))"
-                    )
-                    legendBadge(
-                        gradient: CozyTheme.goldGradient,
-                        border: CozyTheme.goldBorder,
-                        label: "Gold (\(monthStats.gold))"
-                    )
-                }
-
-                HStack {
-                    Text("Base complete color:")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(CozyTheme.inkSecondary)
-
-                    Spacer()
-
-                    ForEach(BaseHighlightColorStyle.allCases) { style in
-                        let active = preferences.baseHighlightStyle == style
-                        Button {
-                            preferences.baseHighlightStyle = style
-                            try? modelContext.save()
-                        } label: {
-                            Text(style.title)
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(active ? style.inkColor : CozyTheme.inkSecondary)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(
-                                    Capsule().fill(
-                                        active
-                                            ? AnyShapeStyle(style.gradient)
-                                            : AnyShapeStyle(CozyTheme.canvasMiddle)
-                                    )
-                                )
-                                .overlay(
-                                    Capsule().strokeBorder(
-                                        active ? style.borderColor : CozyTheme.cardBorder.opacity(0.6),
-                                        lineWidth: 1
-                                    )
-                                )
+                // Tier Legend + Base Highlight Color Switcher (Bronze vs Pink)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 12) {
+                        if preferences.optionalBonusTasksEnabled {
+                            legendBadge(
+                                gradient: baseStyle.gradient,
+                                border: baseStyle.borderColor,
+                                label: isADDFriendly ? "\(monthStats.base)" : "All Done (\(monthStats.base))"
+                            )
+                            legendBadge(
+                                gradient: CozyTheme.silverGradient,
+                                border: CozyTheme.silverBorder,
+                                label: "Silver (\(monthStats.silver))"
+                            )
                         }
-                        .buttonStyle(.plain)
+                        legendBadge(
+                            gradient: CozyTheme.goldGradient,
+                            border: CozyTheme.goldBorder,
+                            label: "Gold (\(monthStats.gold))"
+                        )
+                    }
+
+                    if preferences.optionalBonusTasksEnabled && !isADDFriendly {
+                        HStack {
+                            Text("Base complete color:")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(CozyTheme.inkSecondary)
+
+                            Spacer()
+
+                            ForEach(BaseHighlightColorStyle.allCases) { style in
+                                let active = preferences.baseHighlightStyle == style
+                                Button {
+                                    preferences.baseHighlightStyle = style
+                                    try? modelContext.save()
+                                } label: {
+                                    Text(style.title)
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundStyle(active ? style.inkColor : CozyTheme.inkSecondary)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(
+                                            Capsule().fill(
+                                                active
+                                                    ? AnyShapeStyle(style.gradient)
+                                                    : AnyShapeStyle(CozyTheme.canvasMiddle)
+                                            )
+                                        )
+                                        .overlay(
+                                            Capsule().strokeBorder(
+                                                active ? style.borderColor : CozyTheme.cardBorder.opacity(0.6),
+                                                lineWidth: 1
+                                            )
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
                 }
             }
@@ -322,9 +347,38 @@ struct MonthCalendarView: View {
         let dayNumber = calendar.component(.day, from: date)
         let summary = streakSnapshot.summary(for: date)
         let tier = summary.tier
+        let showRanks = preferences.dayRanksEnabled
         let isToday = DateHelpers.isSameDay(date, today, calendar: calendar)
+        let isFuture = date > today
         let isSelected = DateHelpers.isSameDay(date, selectedDate, calendar: calendar)
-        let hasPartialProgress = tier == .none && summary.baseCompletedCount > 0
+        let isCompletedDay = !isFuture && summary.allBaseCompleted
+        let hasPartialProgress = !isCompletedDay && !isFuture && summary.baseCompletedCount > 0
+        let hasPredictedFutureTasks = isFuture && summary.baseTotalCount > 0
+
+        let cellTextColor: Color = {
+            if showRanks {
+                return tier.inkColor(baseStyle: baseStyle)
+            }
+            return isCompletedDay ? CozyTheme.deepRose : CozyTheme.inkPrimary
+        }()
+
+        let cellFill: AnyShapeStyle = {
+            if showRanks, let grad = tier.fillGradient(baseStyle: baseStyle) {
+                return AnyShapeStyle(grad)
+            }
+            if isCompletedDay {
+                return AnyShapeStyle(CozyTheme.pinkHighlightGradient)
+            }
+            return AnyShapeStyle(isToday ? CozyTheme.softBlushFill.opacity(0.75) : Color.white.opacity(0.55))
+        }()
+
+        let cellBorder: Color = {
+            if isSelected { return CozyTheme.deepRose }
+            if showRanks && tier != .none { return tier.borderColor(baseStyle: baseStyle) }
+            if isCompletedDay { return CozyTheme.pinkHighlightBorder }
+            if isToday { return CozyTheme.roseAccent }
+            return Color.clear
+        }()
 
         return Button {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.80)) {
@@ -334,24 +388,32 @@ struct MonthCalendarView: View {
             ZStack(alignment: .topTrailing) {
                 VStack(spacing: 2) {
                     Text("\(dayNumber)")
-                        .font(.system(.subheadline, design: .rounded, weight: tier != .none || isToday ? .bold : .medium))
-                        .foregroundStyle(tier.inkColor(baseStyle: baseStyle))
+                        .font(.system(.subheadline, design: .rounded, weight: isCompletedDay || isToday ? .bold : .medium))
+                        .foregroundStyle(cellTextColor)
 
-                    if tier == .gold {
+                    if showRanks && tier == .gold {
                         Image(systemName: "sparkles")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(CozyTheme.goldInk)
-                    } else if tier == .silver {
+                    } else if showRanks && tier == .silver {
                         Circle()
                             .fill(CozyTheme.silverInk.opacity(0.75))
                             .frame(width: 5, height: 5)
-                    } else if tier == .base {
+                    } else if showRanks && tier == .base {
                         Circle()
                             .fill(baseStyle.inkColor.opacity(0.75))
+                            .frame(width: 5, height: 5)
+                    } else if isCompletedDay {
+                        Circle()
+                            .fill(CozyTheme.deepRose.opacity(0.8))
                             .frame(width: 5, height: 5)
                     } else if hasPartialProgress {
                         Circle()
                             .fill(CozyTheme.roseAccent.opacity(0.55))
+                            .frame(width: 4, height: 4)
+                    } else if hasPredictedFutureTasks {
+                        Circle()
+                            .fill(CozyTheme.deepRose.opacity(0.35))
                             .frame(width: 4, height: 4)
                     } else {
                         Color.clear.frame(width: 4, height: 4)
@@ -361,22 +423,17 @@ struct MonthCalendarView: View {
                 .frame(height: 44)
                 .background(
                     RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .fill(
-                            tier.fillGradient(baseStyle: baseStyle).map { AnyShapeStyle($0) }
-                                ?? AnyShapeStyle(isToday ? CozyTheme.softBlushFill.opacity(0.75) : Color.white.opacity(0.55))
-                        )
+                        .fill(cellFill)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 13, style: .continuous)
                         .strokeBorder(
-                            isSelected
-                                ? CozyTheme.deepRose
-                                : (tier != .none ? tier.borderColor(baseStyle: baseStyle) : (isToday ? CozyTheme.roseAccent : Color.clear)),
+                            cellBorder,
                             lineWidth: isSelected ? 2.2 : 1.2
                         )
                 )
                 .shadow(
-                    color: tier == .gold ? CozyTheme.goldBorder.opacity(0.28) : Color.clear,
+                    color: (showRanks && tier == .gold) ? CozyTheme.goldBorder.opacity(0.28) : Color.clear,
                     radius: 5,
                     x: 0,
                     y: 2
@@ -391,6 +448,9 @@ struct MonthCalendarView: View {
     private var selectedDayInspectorCard: some View {
         let summary = streakSnapshot.summary(for: selectedDate)
         let tier = summary.tier
+        let showRanks = preferences.dayRanksEnabled
+        let isFuture = selectedDate > today
+        let isSelectedToday = DateHelpers.isSameDay(selectedDate, today, calendar: calendar)
 
         let baseItems = occurrences
             .filter {
@@ -400,17 +460,19 @@ struct MonthCalendarView: View {
             }
             .sorted { $0.displayTitle < $1.displayTitle }
 
-        let bonusItems = occurrences
-            .filter {
-                $0.status != .skipped
-                    && ($0.bonusForDate.map { DateHelpers.isSameDay($0, selectedDate, calendar: calendar) } ?? false)
-                    && ($0.isCompleted || DateHelpers.isSameDay(selectedDate, today, calendar: calendar))
-            }
-            .sorted { $0.bonusSlot < $1.bonusSlot }
+        let bonusItems = preferences.optionalBonusTasksEnabled
+            ? occurrences
+                .filter {
+                    $0.status != .skipped
+                        && ($0.bonusForDate.map { DateHelpers.isSameDay($0, selectedDate, calendar: calendar) } ?? false)
+                        && ($0.isCompleted || isSelectedToday)
+                }
+                .sorted { $0.bonusSlot < $1.bonusSlot }
+            : []
 
         let dateFormatter: DateFormatter = {
             let fmt = DateFormatter()
-            fmt.dateFormat = "EEEE, MMM d, yyyy"
+            fmt.dateFormat = isADDFriendly ? "MMM d, yyyy" : "EEEE, MMM d, yyyy"
             return fmt
         }()
 
@@ -421,12 +483,31 @@ struct MonthCalendarView: View {
                         .font(.system(.headline, design: .rounded, weight: .bold))
                         .foregroundStyle(CozyTheme.inkPrimary)
 
-                    if summary.baseTotalCount > 0 {
-                        Text("\(summary.baseCompletedCount)/\(summary.baseTotalCount) daily tasks · \(summary.bonusCompletedCount)/2 bonus tasks")
+                    if isFuture && summary.baseTotalCount > 0 {
+                        Text(
+                            isADDFriendly
+                                ? "\(summary.baseTotalCount) upcoming"
+                                : "Predicted schedule · \(summary.baseTotalCount) upcoming task\(summary.baseTotalCount == 1 ? "" : "s")"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(CozyTheme.inkSecondary)
+                    } else if summary.baseTotalCount > 0 {
+                        let bonusClause = (!isADDFriendly && preferences.optionalBonusTasksEnabled)
+                            ? " · \(summary.bonusCompletedCount)/2 bonus tasks"
+                            : ""
+                        Text(
+                            isADDFriendly
+                                ? "\(summary.baseCompletedCount)/\(summary.baseTotalCount) done"
+                                : "\(summary.baseCompletedCount)/\(summary.baseTotalCount) daily tasks\(bonusClause)"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(CozyTheme.inkSecondary)
+                    } else if isSelectedToday && preferences.cupHours(for: today, calendar: calendar) == 0 {
+                        Text(isADDFriendly ? "0 hours today" : "Empty cup rest day (0h) · Tasks moved back a day")
                             .font(.caption)
                             .foregroundStyle(CozyTheme.inkSecondary)
-                    } else {
-                        Text("No tasks recorded on this date")
+                    } else if !isADDFriendly {
+                        Text(isFuture ? "Open predicted day · No tasks scheduled yet" : "No tasks recorded on this date")
                             .font(.caption)
                             .foregroundStyle(CozyTheme.inkSecondary)
                     }
@@ -434,12 +515,14 @@ struct MonthCalendarView: View {
 
                 Spacer()
 
-                if tier != .none {
+                if showRanks && tier != .none {
                     HStack(spacing: 4) {
                         Text(tier.medalEmoji)
-                        Text(tier.badgeTitle(baseStyle: baseStyle))
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(tier.inkColor(baseStyle: baseStyle))
+                        if !isADDFriendly {
+                            Text(tier.badgeTitle(baseStyle: baseStyle))
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(tier.inkColor(baseStyle: baseStyle))
+                        }
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
@@ -449,6 +532,13 @@ struct MonthCalendarView: View {
                     .overlay(
                         Capsule().strokeBorder(tier.borderColor(baseStyle: baseStyle), lineWidth: 1)
                     )
+                } else if !showRanks && !isFuture && summary.allBaseCompleted {
+                    Text("Done")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(CozyTheme.deepRose)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(CozyTheme.petalPill))
                 }
             }
 
@@ -459,7 +549,7 @@ struct MonthCalendarView: View {
             }
 
             if !bonusItems.isEmpty {
-                Text("Optional Bonus Tasks")
+                Text(isADDFriendly ? "Bonus" : "Optional Bonus Tasks")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(CozyTheme.deepRose)
                     .padding(.top, 4)
@@ -474,21 +564,51 @@ struct MonthCalendarView: View {
     }
 
     private func dayTaskRow(item: TaskOccurrence, isBonus: Bool) -> some View {
-        HStack(spacing: 10) {
+        let weight = item.displayWeight
+        let deadline = item.effectiveHardDeadline(calendar: calendar)
+
+        return HStack(spacing: 8) {
             Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(item.isCompleted ? CozyTheme.roseAccent : CozyTheme.inkMuted)
-            Text(item.displayEmoji)
-            Text(item.displayTitle)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(item.isCompleted ? CozyTheme.inkPrimary : CozyTheme.inkSecondary)
+            if !isADDFriendly {
+                Text(item.displayEmoji)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.displayTitle)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(item.isCompleted ? CozyTheme.inkPrimary : CozyTheme.inkSecondary)
+                if let deadline {
+                    Text(
+                        isADDFriendly
+                            ? "Due \(DateHelpers.shortMonthDayString(for: deadline, calendar: calendar))"
+                            : "📌 Hard deadline \(DateHelpers.shortMonthDayString(for: deadline, calendar: calendar))"
+                    )
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(CozyTheme.deepRose)
+                }
+            }
             Spacer()
             if isBonus {
                 Text("Bonus")
                     .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundStyle(CozyTheme.goldInk)
+                    .foregroundStyle(preferences.dayRanksEnabled ? CozyTheme.goldInk : CozyTheme.deepRose)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
-                    .background(Capsule().fill(CozyTheme.goldGradient))
+                    .background(
+                        Capsule().fill(
+                            preferences.dayRanksEnabled
+                                ? AnyShapeStyle(CozyTheme.goldGradient)
+                                : AnyShapeStyle(CozyTheme.petalPill)
+                        )
+                    )
+            }
+            if !isADDFriendly || weight != .light {
+                Text(isADDFriendly ? weight.title : "\(weight.emoji) \(weight.title)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(weight.pillForeground)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(weight.pillBackground))
             }
             Text(DateHelpers.formatDuration(minutes: item.displayDurationMinutes))
                 .font(.caption2.weight(.semibold))

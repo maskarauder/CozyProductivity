@@ -6,6 +6,7 @@ struct DayAchievementSummary: Equatable {
     let baseTotalCount: Int
     let baseCompletedCount: Int
     let bonusCompletedCount: Int
+    var optionalBonusTasksEnabled: Bool = true
 
     var allBaseCompleted: Bool {
         baseTotalCount > 0 && baseCompletedCount == baseTotalCount
@@ -13,6 +14,9 @@ struct DayAchievementSummary: Equatable {
 
     var tier: DayCompletionTier {
         guard allBaseCompleted else { return .none }
+        if !optionalBonusTasksEnabled {
+            return .gold
+        }
         if bonusCompletedCount >= 2 {
             return .gold
         } else if bonusCompletedCount == 1 {
@@ -54,6 +58,7 @@ enum StreakAndBonusService {
     static func evaluate(
         occurrences: [TaskOccurrence],
         persistedLongestStreak: Int = 0,
+        optionalBonusTasksEnabled: Bool = true,
         today referenceDate: Date = Date(),
         calendar: Calendar = DateHelpers.calendar
     ) -> StreakSnapshot {
@@ -96,7 +101,8 @@ enum StreakAndBonusService {
                 date: day,
                 baseTotalCount: baseTotalByDay[day] ?? 0,
                 baseCompletedCount: baseDoneByDay[day] ?? 0,
-                bonusCompletedCount: bonusDoneByDay[day] ?? 0
+                bonusCompletedCount: bonusDoneByDay[day] ?? 0,
+                optionalBonusTasksEnabled: optionalBonusTasksEnabled
             )
             summaries[day] = summary
 
@@ -174,7 +180,7 @@ enum StreakAndBonusService {
     // MARK: - Two Optional Bonus Tasks Management (Selectable from Next 7 Days)
 
     /// Ensures that once all base tasks for `today` are completed, up to 2 upcoming tasks from `[tomorrow ... today + 7]`
-    /// are populated into Bonus Slots 1 & 2 (and clears uncompleted bonus slots if base tasks aren't all complete).
+    /// are populated into Bonus Slots 1 & 2 (and clears uncompleted bonus slots if base tasks aren't all complete or bonus tasks are disabled).
     static func syncBonusSlots(
         context: ModelContext,
         occurrences: [TaskOccurrence],
@@ -183,66 +189,72 @@ enum StreakAndBonusService {
         calendar: Calendar = DateHelpers.calendar
     ) {
         let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
+        let bonusEnabled = preferences?.optionalBonusTasksEnabled ?? true
 
-        // Clean up any stale pending bonus assignments from past days
+        // Clean up any stale pending bonus assignments from past days (or all pending bonus slots when disabled)
         for occ in occurrences where occ.status == .pending {
-            if let bDate = occ.bonusForDate, DateHelpers.startOfDay(for: bDate, calendar: calendar) < today {
-                occ.bonusForDate = nil
-                occ.bonusSlot = 0
-            }
-        }
-
-        let baseToday = occurrences.filter {
-            $0.status != .skipped
-                && $0.bonusForDate == nil
-                && DateHelpers.isSameDay($0.scheduledDate, today, calendar: calendar)
-        }
-        let allBaseCompleted = !baseToday.isEmpty && baseToday.allSatisfy(\.isCompleted)
-
-        if !allBaseCompleted {
-            // Hide/release uncompleted optional bonus slots until all base tasks are done
-            for occ in occurrences where occ.status == .pending {
-                if let bDate = occ.bonusForDate, DateHelpers.isSameDay(bDate, today, calendar: calendar) {
+            if let bDate = occ.bonusForDate {
+                if !bonusEnabled || DateHelpers.startOfDay(for: bDate, calendar: calendar) < today {
                     occ.bonusForDate = nil
                     occ.bonusSlot = 0
                 }
             }
-        } else {
-            for slot in [1, 2] {
-                let existingInSlot = occurrences.first {
-                    $0.status != .skipped
-                        && $0.bonusSlot == slot
-                        && ($0.bonusForDate.map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false)
+        }
+
+        if bonusEnabled {
+            let baseToday = occurrences.filter {
+                $0.status != .skipped
+                    && $0.bonusForDate == nil
+                    && DateHelpers.isSameDay($0.scheduledDate, today, calendar: calendar)
+            }
+            let allBaseCompleted = !baseToday.isEmpty && baseToday.allSatisfy(\.isCompleted)
+
+            if !allBaseCompleted {
+                // Hide/release uncompleted optional bonus slots until all base tasks are done
+                for occ in occurrences where occ.status == .pending {
+                    if let bDate = occ.bonusForDate, DateHelpers.isSameDay(bDate, today, calendar: calendar) {
+                        occ.bonusForDate = nil
+                        occ.bonusSlot = 0
+                    }
                 }
-                guard existingInSlot == nil else { continue }
+            } else {
+                for slot in [1, 2] {
+                    let existingInSlot = occurrences.first {
+                        $0.status != .skipped
+                            && $0.bonusSlot == slot
+                            && ($0.bonusForDate.map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false)
+                    }
+                    guard existingInSlot == nil else { continue }
 
-                let otherSlot = slot == 1 ? 2 : 1
-                let otherTemplateID = occurrences.first {
-                    $0.status != .skipped
-                        && $0.bonusSlot == otherSlot
-                        && ($0.bonusForDate.map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false)
-                }?.template?.id
+                    let otherSlot = slot == 1 ? 2 : 1
+                    let otherTemplateID = occurrences.first {
+                        $0.status != .skipped
+                            && $0.bonusSlot == otherSlot
+                            && ($0.bonusForDate.map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false)
+                    }?.template?.id
 
-                let candidates = eligibleCandidatesForBonusSlot(
-                    slot: slot,
-                    occurrences: occurrences,
-                    today: today,
-                    calendar: calendar
-                )
+                    let candidates = eligibleCandidatesForBonusSlot(
+                        slot: slot,
+                        occurrences: occurrences,
+                        today: today,
+                        calendar: calendar
+                    )
 
-                // Prefer a distinct task template from the other bonus slot when available
-                let chosen = candidates.first { $0.template?.id != otherTemplateID } ?? candidates.first
-                if let chosen {
-                    chosen.bonusForDate = today
-                    chosen.bonusSlot = slot
+                    // Prefer a distinct task template from the other bonus slot when available
+                    let chosen = candidates.first { $0.template?.id != otherTemplateID } ?? candidates.first
+                    if let chosen {
+                        chosen.bonusForDate = today
+                        chosen.bonusSlot = slot
+                    }
                 }
             }
         }
 
-        if let preferences {
+        if let preferences, preferences.streaksEnabled {
             let snapshot = evaluate(
                 occurrences: occurrences,
                 persistedLongestStreak: preferences.longestRecordedStreak,
+                optionalBonusTasksEnabled: bonusEnabled,
                 today: today,
                 calendar: calendar
             )
