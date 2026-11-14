@@ -18,7 +18,16 @@ final class TaskOccurrence {
     /// True if the user manually moved or pinned this specific occurrence so auto-rebalance leaves its date intact.
     var isManuallyPinned: Bool
 
-    /// Snapshot fields preserved for history/summaries even if a template is later renamed.
+    /// When non-nil, this upcoming occurrence was selected into one of the 2 optional bonus slots on `bonusForDate`.
+    var bonusForDate: Date? = nil
+    var bonusSlot: Int = 0
+
+    /// Identifiers for two-way Google Calendar push/merge so rebalanced or completed tasks update in place without duplicating.
+    var googleCalendarEventId: String? = nil
+    var syncedEKEventIdentifier: String? = nil
+    var lastCalendarSyncSignature: String? = nil
+
+    /// Snapshot fields preserved for history/summaries even if a template is later renamed or deleted.
     var titleSnapshot: String
     var emojiSnapshot: String
     var durationMinutesSnapshot: Int
@@ -32,6 +41,11 @@ final class TaskOccurrence {
         status: OccurrenceStatus = .pending,
         completedAt: Date? = nil,
         isManuallyPinned: Bool = false,
+        bonusForDate: Date? = nil,
+        bonusSlot: Int = 0,
+        googleCalendarEventId: String? = nil,
+        syncedEKEventIdentifier: String? = nil,
+        lastCalendarSyncSignature: String? = nil,
         template: TaskTemplate
     ) {
         self.id = id
@@ -40,6 +54,11 @@ final class TaskOccurrence {
         self.statusRaw = status.rawValue
         self.completedAt = completedAt
         self.isManuallyPinned = isManuallyPinned
+        self.bonusForDate = bonusForDate.map { DateHelpers.startOfDay(for: $0) }
+        self.bonusSlot = bonusSlot
+        self.googleCalendarEventId = googleCalendarEventId
+        self.syncedEKEventIdentifier = syncedEKEventIdentifier
+        self.lastCalendarSyncSignature = lastCalendarSyncSignature
         self.titleSnapshot = template.title
         self.emojiSnapshot = template.emoji
         self.durationMinutesSnapshot = template.durationMinutes

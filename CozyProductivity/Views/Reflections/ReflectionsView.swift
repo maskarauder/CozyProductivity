@@ -105,6 +105,9 @@ struct ReflectionsView: View {
                             .strokeBorder(CozyTheme.cardBorder, lineWidth: 1)
                     )
 
+                    // Streak & Medal Records Card
+                    streakRecordsCard
+
                     // Notification Preview Card
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
@@ -228,5 +231,47 @@ struct ReflectionsView: View {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+
+    private var streakRecordsCard: some View {
+        let snapshot = StreakAndBonusService.evaluate(
+            occurrences: occurrences,
+            persistedLongestStreak: preferences.longestRecordedStreak
+        )
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Label("Streak & Medal Records", systemImage: "flame.fill")
+                .font(.system(.subheadline, design: .rounded, weight: .bold))
+                .foregroundStyle(CozyTheme.deepRose)
+
+            HStack(spacing: 12) {
+                statTile(
+                    value: "\(snapshot.currentStreak)d",
+                    label: "Current Streak"
+                )
+                statTile(
+                    value: "\(snapshot.longestStreak)d",
+                    label: "Longest Streak"
+                )
+            }
+            .padding(4)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(CozyTheme.softBlushFill.opacity(0.65))
+            )
+
+            HStack(spacing: 8) {
+                Text("🥇 Gold: \(snapshot.totalGoldDays)")
+                Text("·")
+                Text("🥈 Silver: \(snapshot.totalSilverDays)")
+                Text("·")
+                Text("🥉 Complete: \(snapshot.totalBronzeOrPinkDays)")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(CozyTheme.inkSecondary)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .padding(18)
+        .cozyCard()
     }
 }

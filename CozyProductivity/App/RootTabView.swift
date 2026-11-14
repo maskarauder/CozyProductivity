@@ -46,6 +46,14 @@ struct RootTabView: View {
                     Label("Today", systemImage: "checklist.checked")
                 }
 
+                MonthCalendarView(
+                    occurrences: occurrences,
+                    preferences: activePreferences
+                )
+                .tabItem {
+                    Label("Calendar", systemImage: "calendar")
+                }
+
                 ScheduleOverviewView(
                     templates: templates,
                     occurrences: occurrences,
@@ -57,7 +65,7 @@ struct RootTabView: View {
                     }
                 )
                 .tabItem {
-                    Label("Schedule", systemImage: "calendar.badge.clock")
+                    Label("Schedule", systemImage: "wand.and.stars")
                 }
 
                 ReflectionsView(
@@ -125,25 +133,39 @@ struct RootTabView: View {
         let today = DateHelpers.startOfDay(for: Date())
         let horizonEnd = DateHelpers.addDays(SmartScheduler.defaultHorizonDays - 1, to: today)
 
+        // Immediate synchronous local rebalance first so UI never waits on network I/O
+        let localAppleBusy: [Date: Int]
         if prefs.useCalendarSync {
-            calendarBusyByDay = CalendarFreeTimeService.shared.busyMinutesByDay(
+            localAppleBusy = CalendarFreeTimeService.shared.busyMinutesByDay(
                 from: today,
                 to: horizonEnd,
                 wakingStartHour: prefs.wakingStartHour,
                 wakingEndHour: prefs.wakingEndHour
             )
         } else {
-            calendarBusyByDay = [:]
+            localAppleBusy = [:]
         }
+        calendarBusyByDay = localAppleBusy
 
         SmartScheduler.rebalance(
             context: modelContext,
             preferences: prefs,
-            calendarBusyByDay: calendarBusyByDay,
+            calendarBusyByDay: localAppleBusy,
             referenceDate: today
         )
 
-        syncNotifications(using: prefs)
+        if prefs.useGoogleCalendarSync || prefs.pushTasksToGoogleCalendar {
+            Task { @MainActor in
+                let report = await GoogleCalendarService.shared.syncCalendarsAndRebalance(
+                    context: modelContext,
+                    preferences: prefs,
+                    referenceDate: today
+                )
+                calendarBusyByDay = report.mergedBusyByDay
+            }
+        } else {
+            syncNotifications(using: prefs)
+        }
     }
 
     private func syncNotifications(using explicitPrefs: CozyPreferences? = nil) {
@@ -154,6 +176,14 @@ struct RootTabView: View {
                 preferences: prefs,
                 occurrences: latestOccurrences
             )
+            if prefs.pushTasksToGoogleCalendar {
+                let report = await GoogleCalendarService.shared.syncCalendarsAndRebalance(
+                    context: modelContext,
+                    preferences: prefs,
+                    referenceDate: Date()
+                )
+                calendarBusyByDay = report.mergedBusyByDay
+            }
         }
     }
 }

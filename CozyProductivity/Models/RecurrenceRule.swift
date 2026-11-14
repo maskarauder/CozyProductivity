@@ -133,3 +133,123 @@ enum CalendarDeductionMode: String, Codable, CaseIterable, Identifiable {
         }
     }
 }
+
+enum GoogleCalendarSyncMode: String, Codable, CaseIterable, Identifiable {
+    case oauthREST
+    case iosGoogleAccount
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .oauthREST:
+            return "Google OAuth 2.0 (Direct API)"
+        case .iosGoogleAccount:
+            return "iPhone Google Account Bridge"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .oauthREST:
+            return "Direct two-way sync via Google Calendar REST API v3 using PKCE OAuth."
+        case .iosGoogleAccount:
+            return "Zero-setup sync with any Gmail / Google Calendar account signed into iPhone Settings."
+        }
+    }
+}
+
+enum BaseHighlightColorStyle: String, Codable, CaseIterable, Identifiable {
+    case roseBronze
+    case blushPink
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .roseBronze: return "Rose Bronze"
+        case .blushPink: return "Pastel Pink"
+        }
+    }
+
+    var gradient: LinearGradient {
+        switch self {
+        case .roseBronze: return CozyTheme.bronzeGradient
+        case .blushPink: return CozyTheme.pinkHighlightGradient
+        }
+    }
+
+    var borderColor: Color {
+        switch self {
+        case .roseBronze: return CozyTheme.bronzeBorder
+        case .blushPink: return CozyTheme.pinkHighlightBorder
+        }
+    }
+
+    var inkColor: Color {
+        switch self {
+        case .roseBronze: return CozyTheme.bronzeInk
+        case .blushPink: return CozyTheme.pinkHighlightInk
+        }
+    }
+}
+
+enum DayCompletionTier: Int, Codable, Comparable {
+    case none = 0
+    case base = 1
+    case silver = 2
+    case gold = 3
+
+    static func < (lhs: DayCompletionTier, rhs: DayCompletionTier) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    func badgeTitle(baseStyle: BaseHighlightColorStyle) -> String {
+        switch self {
+        case .none:
+            return "In Progress"
+        case .base:
+            return baseStyle == .roseBronze ? "Bronze Complete" : "Pink Complete"
+        case .silver:
+            return "Silver · Streak Kept"
+        case .gold:
+            return "Gold · PERFECT"
+        }
+    }
+
+    var medalEmoji: String {
+        switch self {
+        case .none: return ""
+        case .base: return "🥉"
+        case .silver: return "🥈"
+        case .gold: return "🥇"
+        }
+    }
+
+    func fillGradient(baseStyle: BaseHighlightColorStyle) -> LinearGradient? {
+        switch self {
+        case .none: return nil
+        case .base: return baseStyle.gradient
+        case .silver: return CozyTheme.silverGradient
+        case .gold: return CozyTheme.goldGradient
+        }
+    }
+
+    func borderColor(baseStyle: BaseHighlightColorStyle) -> Color {
+        switch self {
+        case .none: return CozyTheme.cardBorder.opacity(0.6)
+        case .base: return baseStyle.borderColor
+        case .silver: return CozyTheme.silverBorder
+        case .gold: return CozyTheme.goldBorder
+        }
+    }
+
+    func inkColor(baseStyle: BaseHighlightColorStyle) -> Color {
+        switch self {
+        case .none: return CozyTheme.inkPrimary
+        case .base: return baseStyle.inkColor
+        case .silver: return CozyTheme.silverInk
+        case .gold: return CozyTheme.goldInk
+        }
+    }
+}

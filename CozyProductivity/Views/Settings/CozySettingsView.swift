@@ -1,3 +1,4 @@
+import AppIntents
 import SwiftData
 import SwiftUI
 
@@ -12,6 +13,8 @@ struct CozySettingsView: View {
 
     @State private var showingOverrideSheet = false
     @State private var testNotificationStatusMessage: String?
+    @State private var googleAuthErrorMessage: String?
+    private var googleService = GoogleCalendarService.shared
 
     private let orderedWeekdays = [2, 3, 4, 5, 6, 7, 1] // Monday -> Sunday
 
@@ -23,16 +26,20 @@ struct CozySettingsView: View {
                         Text("Cozy Preferences")
                             .font(.system(.title2, design: .rounded, weight: .bold))
                             .foregroundStyle(CozyTheme.inkPrimary)
-                        Text("Tune your free-time budgets, calendar sync & summaries")
+                        Text("Budgets, Google & Apple Calendar sync, Siri & summaries")
                             .font(.footnote)
                             .foregroundStyle(CozyTheme.inkSecondary)
                     }
 
+                    siriVoiceCommandsCard
+
+                    googleCalendarSyncCard
+
+                    calendarSyncCard
+
                     weekdayBudgetsCard
 
                     singleDayOverridesCard
-
-                    calendarSyncCard
 
                     notificationsCard
                 }
@@ -169,6 +176,344 @@ struct CozySettingsView: View {
         .cozyCard()
     }
 
+    // MARK: - Native Siri & Apple Shortcuts Voice Commands
+
+    private var siriVoiceCommandsCard: some View {
+        let phrases: [(String, String)] = [
+            ("“Hey Siri, add a task in Cozy Tasks”", "Prompts for title, frequency (Once, Daily, Weekly, Monthly) & duration, then places it on a freer day."),
+            ("“Hey Siri, complete a task in Cozy Tasks”", "Checks off any daily or bonus task and announces Silver / Gold PERFECT streak milestones."),
+            ("“Hey Siri, what's on my Cozy Tasks today?”", "Reads out your remaining checklist items, bonus slots, and minutes."),
+            ("“Hey Siri, check my streak in Cozy Tasks”", "Speaks your current Gold/Silver streak and longest recorded streak."),
+            ("“Hey Siri, sync Google Calendar in Cozy Tasks”", "Merges Google Calendar events, rebalances tasks, and pushes scheduled blocks.")
+        ]
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Label("Siri & Shortcuts Voice Commands", systemImage: "waveform.and.mic")
+                .font(.system(.subheadline, design: .rounded, weight: .bold))
+                .foregroundStyle(CozyTheme.deepRose)
+
+            Text("Ready out-of-the-box with Apple App Intents—no external API keys required.")
+                .font(.caption)
+                .foregroundStyle(CozyTheme.inkSecondary)
+
+            SiriTipView(intent: AddCozyTaskIntent())
+                .siriTipViewStyle(.automatic)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(phrases, id: \.0) { phrase, detail in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(phrase)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(CozyTheme.inkPrimary)
+                        Text(detail)
+                            .font(.caption2)
+                            .foregroundStyle(CozyTheme.inkSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(CozyTheme.canvasMiddle)
+                    )
+                }
+            }
+        }
+        .padding(18)
+        .cozyCard()
+    }
+
+    // MARK: - Two-Way Google Calendar Sync (Read Busy + Push/Merge Tasks)
+
+    private var googleCalendarSyncCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label("Google Calendar Two-Way Sync", systemImage: "arrow.triangle.2.circlepath.circle.fill")
+                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                    .foregroundStyle(CozyTheme.deepRose)
+                Spacer()
+                if googleService.isSyncing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(CozyTheme.roseAccent)
+                }
+            }
+
+            Text("Reads busy Google Calendar blocks to merge into free-time calculations, and pushes/updates scheduled Cozy Tasks back onto Google Calendar.")
+                .font(.caption)
+                .foregroundStyle(CozyTheme.inkSecondary)
+
+            Picker("Connection Mode", selection: Binding(
+                get: { preferences.googleSyncMode },
+                set: { mode in
+                    preferences.googleSyncMode = mode
+                    try? modelContext.save()
+                    onScheduleSettingsChanged()
+                }
+            )) {
+                ForEach(GoogleCalendarSyncMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text(preferences.googleSyncMode.subtitle)
+                .font(.caption2)
+                .foregroundStyle(CozyTheme.inkSecondary)
+
+            if preferences.googleSyncMode == .oauthREST {
+                googleOAuthConfigSection
+            } else {
+                googleIOSBridgeSection
+            }
+
+            Divider().overlay(CozyTheme.cardBorder)
+
+            // Toggle 1: Read & Merge Busy Blocks
+            Toggle(isOn: Binding(
+                get: { preferences.useGoogleCalendarSync },
+                set: { enabled in
+                    Task { @MainActor in
+                        if enabled && preferences.googleSyncMode == .iosGoogleAccount {
+                            _ = await CalendarFreeTimeService.shared.requestAccess()
+                        }
+                        preferences.useGoogleCalendarSync = enabled
+                        try? modelContext.save()
+                        onScheduleSettingsChanged()
+                    }
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Read & Merge Google Busy Events")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(CozyTheme.inkPrimary)
+                    Text("Unions overlapping Google + Apple Calendar events so busy days automatically get lighter task loads.")
+                        .font(.caption)
+                        .foregroundStyle(CozyTheme.inkSecondary)
+                }
+            }
+            .tint(CozyTheme.roseAccent)
+
+            // Toggle 2: Push & Merge Cozy Tasks to Google Calendar
+            Toggle(isOn: Binding(
+                get: { preferences.pushTasksToGoogleCalendar },
+                set: { enabled in
+                    Task { @MainActor in
+                        if enabled && preferences.googleSyncMode == .iosGoogleAccount {
+                            _ = await CalendarFreeTimeService.shared.requestAccess()
+                        }
+                        preferences.pushTasksToGoogleCalendar = enabled
+                        try? modelContext.save()
+                        onScheduleSettingsChanged()
+                    }
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Push & Merge Scheduled Tasks")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(CozyTheme.inkPrimary)
+                    Text("Creates and updates Cozy Tasks in open Google Calendar slots—moving them when rebalanced and marking ✅ when completed.")
+                        .font(.caption)
+                        .foregroundStyle(CozyTheme.inkSecondary)
+                }
+            }
+            .tint(CozyTheme.roseAccent)
+
+            if preferences.pushTasksToGoogleCalendar {
+                Stepper(
+                    "Preferred task push time: \(preferences.googleTaskPushStartHour):00",
+                    value: Binding(
+                        get: { preferences.googleTaskPushStartHour },
+                        set: { val in
+                            preferences.googleTaskPushStartHour = max(6, min(22, val))
+                            try? modelContext.save()
+                            onScheduleSettingsChanged()
+                        }
+                    ),
+                    in: 6...22
+                )
+                .font(.caption.weight(.medium))
+            }
+
+            if preferences.useGoogleCalendarSync && !preferences.useCalendarSync {
+                Divider().overlay(CozyTheme.cardBorder)
+                calendarDeductionControls
+            }
+
+            Button {
+                googleAuthErrorMessage = nil
+                Task { @MainActor in
+                    _ = await googleService.syncCalendarsAndRebalance(
+                        context: modelContext,
+                        preferences: preferences,
+                        referenceDate: Date()
+                    )
+                    onScheduleSettingsChanged()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                    Text(googleService.isSyncing ? "Syncing & Merging…" : "Sync & Merge Google Calendar Now")
+                        .fontWeight(.semibold)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(CozyTheme.primaryButtonGradient)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(googleService.isSyncing)
+
+            if let err = googleAuthErrorMessage {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(CozyTheme.deepRose)
+            } else if let status = googleService.lastSyncStatusMessage {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(CozyTheme.deepRose)
+            }
+        }
+        .padding(18)
+        .cozyCard()
+    }
+
+    @ViewBuilder
+    private var googleOAuthConfigSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Google iOS OAuth Client ID")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(CozyTheme.inkPrimary)
+                TextField(
+                    "123456-abc.apps.googleusercontent.com",
+                    text: Binding(
+                        get: { preferences.googleClientID },
+                        set: { val in
+                            preferences.googleClientID = val
+                            try? modelContext.save()
+                        }
+                    )
+                )
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.caption)
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(CozyTheme.canvasMiddle)
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Target Google Calendar ID")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(CozyTheme.inkPrimary)
+                TextField(
+                    "primary",
+                    text: Binding(
+                        get: { preferences.googleCalendarID },
+                        set: { val in
+                            preferences.googleCalendarID = val
+                            try? modelContext.save()
+                        }
+                    )
+                )
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.caption)
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(CozyTheme.canvasMiddle)
+                )
+            }
+
+            if googleService.isSignedInWithOAuth {
+                HStack {
+                    Label(googleService.connectedAccountLabel, systemImage: "checkmark.seal.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(CozyTheme.deepRose)
+                    Spacer()
+                    Button("Disconnect") {
+                        googleService.signOut()
+                    }
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(CozyTheme.inkSecondary)
+                }
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(CozyTheme.softBlushFill)
+                )
+            } else {
+                Button {
+                    googleAuthErrorMessage = nil
+                    Task { @MainActor in
+                        do {
+                            try await googleService.signInWithGoogle(clientID: preferences.googleClientID)
+                            onScheduleSettingsChanged()
+                        } catch {
+                            googleAuthErrorMessage = error.localizedDescription
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "person.crop.circle.badge.checkmark")
+                        Text("Sign in with Google (OAuth PKCE)")
+                            .fontWeight(.semibold)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(CozyTheme.deepRose)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(CozyTheme.petalPill)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var googleIOSBridgeSection: some View {
+        let detected = CalendarFreeTimeService.shared.googleAccountCalendars()
+        VStack(alignment: .leading, spacing: 8) {
+            if !CalendarFreeTimeService.shared.hasReadAccess {
+                Button {
+                    Task { @MainActor in
+                        _ = await CalendarFreeTimeService.shared.requestAccess()
+                        onScheduleSettingsChanged()
+                    }
+                } label: {
+                    Label("Grant Calendar Access for Google Bridge", systemImage: "lock.open.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(CozyTheme.deepRose)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Capsule().fill(CozyTheme.petalPill))
+                }
+                .buttonStyle(.plain)
+            } else if detected.isEmpty {
+                Text("Add your Gmail account in iPhone Settings → Calendar → Accounts to sync automatically without an OAuth Client ID.")
+                    .font(.caption2)
+                    .foregroundStyle(CozyTheme.inkSecondary)
+            } else {
+                Label(
+                    "Detected \(detected.count) Google calendar\(detected.count == 1 ? "" : "s"): \(detected.map(\.title).joined(separator: ", "))",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(CozyTheme.deepRose)
+            }
+        }
+    }
+
     // MARK: - Optional Apple Calendar Sync
 
     private var calendarSyncCard: some View {
@@ -201,62 +546,66 @@ struct CozySettingsView: View {
 
             if preferences.useCalendarSync {
                 Divider().overlay(CozyTheme.cardBorder)
-
-                Picker("Deduction Style", selection: Binding(
-                    get: { preferences.calendarDeductionMode },
-                    set: { mode in
-                        preferences.calendarDeductionMode = mode
-                        try? modelContext.save()
-                        onScheduleSettingsChanged()
-                    }
-                )) {
-                    ForEach(CalendarDeductionMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.menu)
-                .tint(CozyTheme.deepRose)
-                .font(.subheadline)
-
-                Text(preferences.calendarDeductionMode.subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(CozyTheme.inkSecondary)
-
-                HStack {
-                    Stepper(
-                        "Day starts: \(preferences.wakingStartHour):00",
-                        value: Binding(
-                            get: { preferences.wakingStartHour },
-                            set: { val in
-                                preferences.wakingStartHour = min(val, preferences.wakingEndHour - 2)
-                                try? modelContext.save()
-                                onScheduleSettingsChanged()
-                            }
-                        ),
-                        in: 5...14
-                    )
-                    .font(.caption.weight(.medium))
-                }
-
-                HStack {
-                    Stepper(
-                        "Day ends: \(preferences.wakingEndHour):00",
-                        value: Binding(
-                            get: { preferences.wakingEndHour },
-                            set: { val in
-                                preferences.wakingEndHour = max(val, preferences.wakingStartHour + 2)
-                                try? modelContext.save()
-                                onScheduleSettingsChanged()
-                            }
-                        ),
-                        in: 16...24
-                    )
-                    .font(.caption.weight(.medium))
-                }
+                calendarDeductionControls
             }
         }
         .padding(18)
         .cozyCard()
+    }
+
+    @ViewBuilder
+    private var calendarDeductionControls: some View {
+        Picker("Deduction Style", selection: Binding(
+            get: { preferences.calendarDeductionMode },
+            set: { mode in
+                preferences.calendarDeductionMode = mode
+                try? modelContext.save()
+                onScheduleSettingsChanged()
+            }
+        )) {
+            ForEach(CalendarDeductionMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        .pickerStyle(.menu)
+        .tint(CozyTheme.deepRose)
+        .font(.subheadline)
+
+        Text(preferences.calendarDeductionMode.subtitle)
+            .font(.caption2)
+            .foregroundStyle(CozyTheme.inkSecondary)
+
+        HStack {
+            Stepper(
+                "Day starts: \(preferences.wakingStartHour):00",
+                value: Binding(
+                    get: { preferences.wakingStartHour },
+                    set: { val in
+                        preferences.wakingStartHour = min(val, preferences.wakingEndHour - 2)
+                        try? modelContext.save()
+                        onScheduleSettingsChanged()
+                    }
+                ),
+                in: 5...14
+            )
+            .font(.caption.weight(.medium))
+        }
+
+        HStack {
+            Stepper(
+                "Day ends: \(preferences.wakingEndHour):00",
+                value: Binding(
+                    get: { preferences.wakingEndHour },
+                    set: { val in
+                        preferences.wakingEndHour = max(val, preferences.wakingStartHour + 2)
+                        try? modelContext.save()
+                        onScheduleSettingsChanged()
+                    }
+                ),
+                in: 16...24
+            )
+            .font(.caption.weight(.medium))
+        }
     }
 
     // MARK: - Daily, Weekly & Monthly Summary Notifications

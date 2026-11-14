@@ -39,6 +39,18 @@ final class CozyPreferences {
 
     var hasSeededStarterTasks: Bool
 
+    // MARK: - Streaks & Calendar Highlight Style
+    var longestRecordedStreak: Int = 0
+    var baseHighlightStyleRaw: String = BaseHighlightColorStyle.roseBronze.rawValue
+
+    // MARK: - Two-Way Google Calendar Sync
+    var useGoogleCalendarSync: Bool = false
+    var pushTasksToGoogleCalendar: Bool = false
+    var googleSyncModeRaw: String = GoogleCalendarSyncMode.oauthREST.rawValue
+    var googleClientID: String = ""
+    var googleCalendarID: String = "primary"
+    var googleTaskPushStartHour: Int = 18
+
     init(
         id: UUID = UUID(),
         sundayBudgetMinutes: Int = 180,
@@ -63,7 +75,15 @@ final class CozyPreferences {
         monthlySummaryDayOfMonth: Int = 28,
         monthlySummaryHour: Int = 20,
         monthlySummaryMinute: Int = 0,
-        hasSeededStarterTasks: Bool = false
+        hasSeededStarterTasks: Bool = false,
+        longestRecordedStreak: Int = 0,
+        baseHighlightStyle: BaseHighlightColorStyle = .roseBronze,
+        useGoogleCalendarSync: Bool = false,
+        pushTasksToGoogleCalendar: Bool = false,
+        googleSyncMode: GoogleCalendarSyncMode = .oauthREST,
+        googleClientID: String = "",
+        googleCalendarID: String = "primary",
+        googleTaskPushStartHour: Int = 18
     ) {
         self.id = id
         self.sundayBudgetMinutes = sundayBudgetMinutes
@@ -89,11 +109,34 @@ final class CozyPreferences {
         self.monthlySummaryHour = monthlySummaryHour
         self.monthlySummaryMinute = monthlySummaryMinute
         self.hasSeededStarterTasks = hasSeededStarterTasks
+        self.longestRecordedStreak = longestRecordedStreak
+        self.baseHighlightStyleRaw = baseHighlightStyle.rawValue
+        self.useGoogleCalendarSync = useGoogleCalendarSync
+        self.pushTasksToGoogleCalendar = pushTasksToGoogleCalendar
+        self.googleSyncModeRaw = googleSyncMode.rawValue
+        self.googleClientID = googleClientID
+        self.googleCalendarID = googleCalendarID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "primary" : googleCalendarID
+        self.googleTaskPushStartHour = max(6, min(22, googleTaskPushStartHour))
     }
 
     var calendarDeductionMode: CalendarDeductionMode {
         get { CalendarDeductionMode(rawValue: calendarDeductionModeRaw) ?? .subtractFromBudget }
         set { calendarDeductionModeRaw = newValue.rawValue }
+    }
+
+    var baseHighlightStyle: BaseHighlightColorStyle {
+        get { BaseHighlightColorStyle(rawValue: baseHighlightStyleRaw) ?? .roseBronze }
+        set { baseHighlightStyleRaw = newValue.rawValue }
+    }
+
+    var googleSyncMode: GoogleCalendarSyncMode {
+        get { GoogleCalendarSyncMode(rawValue: googleSyncModeRaw) ?? .oauthREST }
+        set { googleSyncModeRaw = newValue.rawValue }
+    }
+
+    /// True whenever Apple Calendar busy sync or Google Calendar busy sync is active.
+    var hasAnyCalendarBusySyncEnabled: Bool {
+        useCalendarSync || useGoogleCalendarSync
     }
 
     /// Weekday is 1 (Sunday) ... 7 (Saturday) in Gregorian Calendar.

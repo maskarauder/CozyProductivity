@@ -52,7 +52,11 @@ struct ScheduleOverviewView: View {
 
     private var occurrencesOnSelectedDay: [TaskOccurrence] {
         occurrences
-            .filter { $0.status != .skipped && DateHelpers.isSameDay($0.scheduledDate, selectedSummary.date) }
+            .filter { occ in
+                guard occ.status != .skipped else { return false }
+                let effectiveDate = occ.isCompleted ? (occ.bonusForDate ?? occ.scheduledDate) : occ.scheduledDate
+                return DateHelpers.isSameDay(effectiveDate, selectedSummary.date)
+            }
             .sorted { $0.displayDurationMinutes > $1.displayDurationMinutes }
     }
 

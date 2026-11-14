@@ -28,7 +28,7 @@ final class TaskTemplate {
     var isActive: Bool
     var createdAt: Date
 
-    @Relationship(deleteRule: .cascade, inverse: \TaskOccurrence.template)
+    @Relationship(deleteRule: .nullify, inverse: \TaskOccurrence.template)
     var occurrences: [TaskOccurrence] = []
 
     init(

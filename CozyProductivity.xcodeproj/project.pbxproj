@@ -15,13 +15,19 @@
 		F073C5429E2C982720463C3F /* TaskOccurrence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81E6A17A6E17C9AAB1ACD701 /* TaskOccurrence.swift */; };
 		778FAA52C1A18788CD60CD1A /* TaskTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0151A41FEE4B362555999EA /* TaskTemplate.swift */; };
 		10F2652C569C48CA7A103265 /* CalendarFreeTimeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 409F8A940C897CD8E65ED69B /* CalendarFreeTimeService.swift */; };
+		BE02C78A2394B174CB0EF1B8 /* CozyModelContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4630C0EB7BE901A9472E4EDA /* CozyModelContainer.swift */; };
 		FFF1E88E496C5802A2D3ECDA /* DateHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D68C7972D3FE8557870E06D8 /* DateHelpers.swift */; };
+		DF1D7A3BDA4EC038B383EC41 /* GoogleCalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED2F7CBB70A235046EA1BE3 /* GoogleCalendarService.swift */; };
+		BAF2D018D547E21DF33FEB4B /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8374A199BE7A97A65F991F70 /* KeychainHelper.swift */; };
 		43AE92E0DA287B6DAA38B5D2 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20C625C98A69565163F67B5F /* NotificationManager.swift */; };
 		2DBFF7850E6E0005C99D970B /* SmartScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 831C0EC9886EDE871FD0F2A7 /* SmartScheduler.swift */; };
+		BBC86600253D245F24F68AF9 /* StreakAndBonusService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA5057908F0DB888D2216D44 /* StreakAndBonusService.swift */; };
 		CD51F3A5D1AED0B5F526C504 /* SummaryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01155A19088B92DA2A3C22D1 /* SummaryBuilder.swift */; };
+		E3DE28FA8477F0948FD489D1 /* CozyShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1635316DA4EA99F7E62996E8 /* CozyShortcuts.swift */; };
 		5021CD1D3D2996F6C8930A86 /* ConfettiCelebrationOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D47066AFA821A9302F56BE4 /* ConfettiCelebrationOverlay.swift */; };
 		DE11EC367FA7450AFC51FD34 /* TaskChecklistCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D9F8DB5D10E7ECC045F1D7F /* TaskChecklistCardView.swift */; };
 		DA0E266F8597CBCF773DDC1F /* TodayChecklistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836F953E4EE44D9040CC54E2 /* TodayChecklistView.swift */; };
+		99904EED4EE038E86C7EECFA /* MonthCalendarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEDAA4578F0980D784EDB34 /* MonthCalendarView.swift */; };
 		EA568478D2D7F1045F1B32C1 /* ScheduleOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3708F5D55CA6F844891098D2 /* ScheduleOverviewView.swift */; };
 		6396FC94A77F11C9923C4DD7 /* TaskEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3D8870D4CDC8C2A786B7D0A /* TaskEditorSheet.swift */; };
 		5313669E48BDF39D8DB7E758 /* ReflectionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3103C927BBDACB4508714F2 /* ReflectionsView.swift */; };
@@ -52,13 +58,19 @@
 		81E6A17A6E17C9AAB1ACD701 /* TaskOccurrence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskOccurrence.swift; sourceTree = "<group>"; };
 		A0151A41FEE4B362555999EA /* TaskTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskTemplate.swift; sourceTree = "<group>"; };
 		409F8A940C897CD8E65ED69B /* CalendarFreeTimeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarFreeTimeService.swift; sourceTree = "<group>"; };
+		4630C0EB7BE901A9472E4EDA /* CozyModelContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CozyModelContainer.swift; sourceTree = "<group>"; };
 		D68C7972D3FE8557870E06D8 /* DateHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateHelpers.swift; sourceTree = "<group>"; };
+		0ED2F7CBB70A235046EA1BE3 /* GoogleCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleCalendarService.swift; sourceTree = "<group>"; };
+		8374A199BE7A97A65F991F70 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		20C625C98A69565163F67B5F /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
 		831C0EC9886EDE871FD0F2A7 /* SmartScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartScheduler.swift; sourceTree = "<group>"; };
+		DA5057908F0DB888D2216D44 /* StreakAndBonusService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreakAndBonusService.swift; sourceTree = "<group>"; };
 		01155A19088B92DA2A3C22D1 /* SummaryBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummaryBuilder.swift; sourceTree = "<group>"; };
+		1635316DA4EA99F7E62996E8 /* CozyShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CozyShortcuts.swift; sourceTree = "<group>"; };
 		1D47066AFA821A9302F56BE4 /* ConfettiCelebrationOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfettiCelebrationOverlay.swift; sourceTree = "<group>"; };
 		6D9F8DB5D10E7ECC045F1D7F /* TaskChecklistCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskChecklistCardView.swift; sourceTree = "<group>"; };
 		836F953E4EE44D9040CC54E2 /* TodayChecklistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayChecklistView.swift; sourceTree = "<group>"; };
+		9DEDAA4578F0980D784EDB34 /* MonthCalendarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonthCalendarView.swift; sourceTree = "<group>"; };
 		3708F5D55CA6F844891098D2 /* ScheduleOverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScheduleOverviewView.swift; sourceTree = "<group>"; };
 		A3D8870D4CDC8C2A786B7D0A /* TaskEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskEditorSheet.swift; sourceTree = "<group>"; };
 		B3103C927BBDACB4508714F2 /* ReflectionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReflectionsView.swift; sourceTree = "<group>"; };
@@ -136,12 +148,24 @@
 			isa = PBXGroup;
 			children = (
 				409F8A940C897CD8E65ED69B /* CalendarFreeTimeService.swift */,
+				4630C0EB7BE901A9472E4EDA /* CozyModelContainer.swift */,
 				D68C7972D3FE8557870E06D8 /* DateHelpers.swift */,
+				0ED2F7CBB70A235046EA1BE3 /* GoogleCalendarService.swift */,
+				8374A199BE7A97A65F991F70 /* KeychainHelper.swift */,
 				20C625C98A69565163F67B5F /* NotificationManager.swift */,
 				831C0EC9886EDE871FD0F2A7 /* SmartScheduler.swift */,
+				DA5057908F0DB888D2216D44 /* StreakAndBonusService.swift */,
 				01155A19088B92DA2A3C22D1 /* SummaryBuilder.swift */,
 			);
 			path = Services;
+			sourceTree = "<group>";
+		};
+		0E6EA2F01C35456A1D4BCA8E /* Intents */ = {
+			isa = PBXGroup;
+			children = (
+				1635316DA4EA99F7E62996E8 /* CozyShortcuts.swift */,
+			);
+			path = Intents;
 			sourceTree = "<group>";
 		};
 		904B2A8AED1B4E2E50B38E6E /* Today */ = {
@@ -152,6 +176,14 @@
 				836F953E4EE44D9040CC54E2 /* TodayChecklistView.swift */,
 			);
 			path = Today;
+			sourceTree = "<group>";
+		};
+		3193AE508F16A479ED957341 /* Calendar */ = {
+			isa = PBXGroup;
+			children = (
+				9DEDAA4578F0980D784EDB34 /* MonthCalendarView.swift */,
+			);
+			path = Calendar;
 			sourceTree = "<group>";
 		};
 		DA3E09A9BD2AF7B06D840721 /* Schedule */ = {
@@ -184,6 +216,7 @@
 			isa = PBXGroup;
 			children = (
 				904B2A8AED1B4E2E50B38E6E /* Today */,
+				3193AE508F16A479ED957341 /* Calendar */,
 				DA3E09A9BD2AF7B06D840721 /* Schedule */,
 				1B9FDEECBFB0FBC162AE47C1 /* Reflections */,
 				2476E8D683E082E20F1D6752 /* Settings */,
@@ -198,6 +231,7 @@
 				62431AEDD2C05F2A6BF90B68 /* Theme */,
 				AFE96185D5422EAAF42E0775 /* Models */,
 				3FB860BBDA184B97A5423DEF /* Services */,
+				0E6EA2F01C35456A1D4BCA8E /* Intents */,
 				E773C369DA6C5F40A9A26250 /* Views */,
 				A1ABDED51C2BEC029D9DDFA3 /* Assets.xcassets */,
 			);
@@ -319,13 +353,19 @@
 				F073C5429E2C982720463C3F /* TaskOccurrence.swift in Sources */,
 				778FAA52C1A18788CD60CD1A /* TaskTemplate.swift in Sources */,
 				10F2652C569C48CA7A103265 /* CalendarFreeTimeService.swift in Sources */,
+				BE02C78A2394B174CB0EF1B8 /* CozyModelContainer.swift in Sources */,
 				FFF1E88E496C5802A2D3ECDA /* DateHelpers.swift in Sources */,
+				DF1D7A3BDA4EC038B383EC41 /* GoogleCalendarService.swift in Sources */,
+				BAF2D018D547E21DF33FEB4B /* KeychainHelper.swift in Sources */,
 				43AE92E0DA287B6DAA38B5D2 /* NotificationManager.swift in Sources */,
 				2DBFF7850E6E0005C99D970B /* SmartScheduler.swift in Sources */,
+				BBC86600253D245F24F68AF9 /* StreakAndBonusService.swift in Sources */,
 				CD51F3A5D1AED0B5F526C504 /* SummaryBuilder.swift in Sources */,
+				E3DE28FA8477F0948FD489D1 /* CozyShortcuts.swift in Sources */,
 				5021CD1D3D2996F6C8930A86 /* ConfettiCelebrationOverlay.swift in Sources */,
 				DE11EC367FA7450AFC51FD34 /* TaskChecklistCardView.swift in Sources */,
 				DA0E266F8597CBCF773DDC1F /* TodayChecklistView.swift in Sources */,
+				99904EED4EE038E86C7EECFA /* MonthCalendarView.swift in Sources */,
 				EA568478D2D7F1045F1B32C1 /* ScheduleOverviewView.swift in Sources */,
 				6396FC94A77F11C9923C4DD7 /* TaskEditorSheet.swift in Sources */,
 				5313669E48BDF39D8DB7E758 /* ReflectionsView.swift in Sources */,
@@ -408,8 +448,9 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cozy Tasks";
-				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "CozyProductivity checks busy blocks on your calendar so flexible tasks can be distributed to days with more free time.";
-				INFOPLIST_KEY_NSCalendarsUsageDescription = "CozyProductivity checks busy blocks on your calendar so flexible tasks can be distributed to days with more free time.";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "CozyProductivity reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "CozyProductivity reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "CozyProductivity pushes scheduled tasks onto your calendar.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -434,8 +475,9 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cozy Tasks";
-				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "CozyProductivity checks busy blocks on your calendar so flexible tasks can be distributed to days with more free time.";
-				INFOPLIST_KEY_NSCalendarsUsageDescription = "CozyProductivity checks busy blocks on your calendar so flexible tasks can be distributed to days with more free time.";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "CozyProductivity reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "CozyProductivity reads busy blocks on your Google and Apple calendars to place flexible tasks on freer days, and pushes scheduled tasks onto your calendar.";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "CozyProductivity pushes scheduled tasks onto your calendar.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

@@ -59,7 +59,62 @@ enum CozyTheme {
         endPoint: .bottomTrailing
     )
 
-    // MARK: - Confetti Palette
+    // MARK: - Medal & Calendar Highlight Palettes
+    static let bronzeGradient = LinearGradient(
+        colors: [
+            Color(red: 0.97, green: 0.82, blue: 0.78), // Warm rose-copper highlight
+            Color(red: 0.90, green: 0.63, blue: 0.56)  // Soft rose bronze
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let bronzeBorder = Color(red: 0.79, green: 0.47, blue: 0.40)
+    static let bronzeInk = Color(red: 0.42, green: 0.21, blue: 0.17)
+
+    static let pinkHighlightGradient = LinearGradient(
+        colors: [
+            Color(red: 0.99, green: 0.81, blue: 0.89),
+            Color(red: 0.95, green: 0.60, blue: 0.75)
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let pinkHighlightBorder = Color(red: 0.86, green: 0.41, blue: 0.60)
+    static let pinkHighlightInk = Color(red: 0.43, green: 0.16, blue: 0.28)
+
+    static let silverGradient = LinearGradient(
+        colors: [
+            Color(red: 0.94, green: 0.95, blue: 0.98),
+            Color(red: 0.80, green: 0.84, blue: 0.92)
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let silverBorder = Color(red: 0.60, green: 0.66, blue: 0.78)
+    static let silverInk = Color(red: 0.24, green: 0.29, blue: 0.39)
+
+    static let goldGradient = LinearGradient(
+        colors: [
+            Color(red: 1.00, green: 0.94, blue: 0.67),
+            Color(red: 0.97, green: 0.77, blue: 0.32)
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let goldBorder = Color(red: 0.85, green: 0.60, blue: 0.13)
+    static let goldInk = Color(red: 0.38, green: 0.25, blue: 0.03)
+
+    static let perfectTitleGradient = LinearGradient(
+        colors: [
+            Color(red: 0.96, green: 0.72, blue: 0.18),
+            Color(red: 0.93, green: 0.45, blue: 0.64),
+            Color(red: 0.98, green: 0.78, blue: 0.24)
+        ],
+        startPoint: .leading,
+        endPoint: .trailing
+    )
+
+    // MARK: - Confetti Palettes
     static let confettiColors: [Color] = [
         Color(red: 0.95, green: 0.52, blue: 0.69), // Strawberry pink
         Color(red: 0.99, green: 0.73, blue: 0.83), // Cotton candy pink
@@ -68,6 +123,23 @@ enum CozyTheme {
         Color(red: 0.78, green: 0.93, blue: 0.86), // Mint leaf
         Color(red: 1.00, green: 0.90, blue: 0.66), // Honey butter
         Color(red: 0.93, green: 0.39, blue: 0.59)  // Rosebud
+    ]
+
+    static let silverConfettiColors: [Color] = [
+        Color(red: 0.85, green: 0.88, blue: 0.96),
+        Color(red: 0.73, green: 0.79, blue: 0.90),
+        Color(red: 0.98, green: 0.76, blue: 0.86),
+        Color(red: 0.90, green: 0.86, blue: 0.99),
+        Color(red: 0.95, green: 0.52, blue: 0.69)
+    ]
+
+    static let goldConfettiColors: [Color] = [
+        Color(red: 1.00, green: 0.84, blue: 0.28), // Bright gold
+        Color(red: 0.99, green: 0.92, blue: 0.58), // Champagne gold
+        Color(red: 0.95, green: 0.66, blue: 0.16), // Warm amber gold
+        Color(red: 0.96, green: 0.52, blue: 0.69), // Strawberry rose
+        Color(red: 1.00, green: 0.78, blue: 0.87), // Sakura pink
+        Color(red: 0.91, green: 0.84, blue: 0.99)  // Lavender sparkle
     ]
 }
 
