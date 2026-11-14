@@ -1994,7 +1994,7 @@ final class SmartSchedulerTests: XCTestCase {
         mockBacking.failingRemoveIDs = ["ek-migrate-fail"]
 
         prefs.enqueueEKDeletion(
-            .init(channelRaw: CozySyncChannel.apple.rawValue, calendarIdentifier: "cal-old", eventID: "ek-queued-ok")
+            .init(channelRaw: CozySyncChannel.apple.rawValue, eventIdentifier: "ek-queued-ok")
         )
         prefs.appleTargetCalendarIdentifier = "cal-new"
 
@@ -2029,7 +2029,7 @@ final class SmartSchedulerTests: XCTestCase {
         XCTAssertEqual(ekOutcome.upserted, 1)
         XCTAssertEqual(ekOutcome.removed, 1)
         XCTAssertGreaterThanOrEqual(ekOutcome.failed, 1)
-        XCTAssertEqual(prefs.pendingEKDeletions.map(\.eventID), ["ek-migrate-fail"])
+        XCTAssertEqual(prefs.pendingEKDeletions.map(\.eventIdentifier), ["ek-migrate-fail"])
     }
 
     func testEventKitFailedRemovalRetainsTrackingAndFailedCommitLeavesMetadataUntouched() throws {
@@ -2101,7 +2101,7 @@ final class SmartSchedulerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(partialOutcome.failed, 1)
         XCTAssertNotNil(activeOcc.appleCalendarEventIdentifier)
         XCTAssertEqual(skippedOcc.appleCalendarEventIdentifier, "ek-skip-fail")
-        XCTAssertTrue(prefs.pendingEKDeletions.contains(where: { $0.eventID == "ek-skip-fail" }))
+        XCTAssertTrue(prefs.pendingEKDeletions.contains(where: { $0.eventIdentifier == "ek-skip-fail" }))
 
         // 2. When `commit()` itself fails, staged local metadata MUST NOT be applied and backing store is reset!
         let t3 = TaskTemplate(title: "Uncommitted task", recurrence: .once, durationMinutes: 30, isAutoScheduled: false, anchorDate: today, calendar: testCalendar)
@@ -2200,7 +2200,6 @@ final class SmartSchedulerTests: XCTestCase {
             legacyWeeklyOcc.scheduledDate = lateEveningPDT
             legacyWeeklyOcc.scheduledDayKey = ""
             legacyWeeklyOcc.scheduledTimezoneID = ""
-            legacyWeeklyOcc.completedDayKey = nil
             legacyWeeklyOcc.snapshotSchemaVersion = 0
             legacyWeeklyOcc.recurrenceKindSnapshotRaw = "once"
             legacyWeeklyOcc.recurrenceLabelSnapshot = "Once"
@@ -2212,7 +2211,7 @@ final class SmartSchedulerTests: XCTestCase {
                 title: "Deep water orchids",
                 emoji: "🌺",
                 category: .home,
-                recurrence: .everyNDays,
+                recurrence: .customDays,
                 durationMinutes: 20,
                 customIntervalDays: 5,
                 isAutoScheduled: true,
@@ -2232,7 +2231,6 @@ final class SmartSchedulerTests: XCTestCase {
             orphanCustomOcc.scheduledDate = lateEveningPDT
             orphanCustomOcc.scheduledDayKey = ""
             orphanCustomOcc.scheduledTimezoneID = ""
-            orphanCustomOcc.completedDayKey = nil
             orphanCustomOcc.snapshotSchemaVersion = 0
             orphanCustomOcc.recurrenceKindSnapshotRaw = "once"
             orphanCustomOcc.recurrenceLabelSnapshot = "Once"
@@ -2265,7 +2263,7 @@ final class SmartSchedulerTests: XCTestCase {
         if let liveTemplate = try ctx2.fetch(FetchDescriptor<TaskTemplate>()).first {
             liveTemplate.title = "Mutated Garage Overhaul"
             liveTemplate.recurrence = .monthly
-            liveTemplate.category = .work
+            liveTemplate.category = .lifeAdmin
             liveTemplate.durationMinutes = 120
             ctx2.delete(liveTemplate)
             try ctx2.save()
@@ -2277,14 +2275,17 @@ final class SmartSchedulerTests: XCTestCase {
 
         XCTAssertEqual(migratedWeekly.snapshotSchemaVersion, TaskOccurrence.currentSnapshotSchemaVersion)
         XCTAssertEqual(migratedWeekly.scheduledDayKey, "2026-06-10")
-        XCTAssertEqual(migratedWeekly.completedDayKey, "2026-06-10")
+        XCTAssertEqual(
+            migratedWeekly.completedLogicalDay(calendar: laCalendar).map { DateHelpers.dayKeyString(for: $0, calendar: laCalendar) },
+            "2026-06-10"
+        )
         XCTAssertEqual(migratedWeekly.displayTitle, "Clean kitchen")
         XCTAssertEqual(migratedWeekly.displayDurationMinutes, 15)
         XCTAssertEqual(migratedWeekly.displayRecurrenceKind, .weekly)
         XCTAssertEqual(migratedWeekly.recurrenceLabel, "Weekly")
         XCTAssertEqual(migratedWeekly.displayCategory, .home)
 
-        XCTAssertEqual(migratedOrphan.displayRecurrenceKind, .everyNDays)
+        XCTAssertEqual(migratedOrphan.displayRecurrenceKind, .customDays)
         XCTAssertEqual(migratedOrphan.recurrenceLabel, "Every 5d")
         XCTAssertEqual(migratedOrphan.scheduledDayKey, "2026-06-10")
     }
@@ -2522,7 +2523,7 @@ final class SmartSchedulerTests: XCTestCase {
         XCTAssertEqual(incrementalEval.longestStreak, fullScan.longestStreak)
         XCTAssertEqual(incrementalEval.totalGoldDays, fullScan.totalGoldDays)
         XCTAssertEqual(incrementalEval.totalSilverDays, fullScan.totalSilverDays)
-        XCTAssertEqual(incrementalEval.totalBronzeDays, fullScan.totalBronzeDays)
+        XCTAssertEqual(incrementalEval.totalBronzeOrPinkDays, fullScan.totalBronzeOrPinkDays)
 
         // Step 3: Scoped calendar sync & notification digest fetches exclude old unlinked history rows while keeping needed items
         let syncCandidates = GoogleCalendarService.fetchOccurrencesForCalendarSync(
