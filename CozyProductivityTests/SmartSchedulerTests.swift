@@ -1901,8 +1901,8 @@ final class SmartSchedulerTests: XCTestCase {
         )
         prefs.enqueueGoogleDeletion(itemA)
 
-        var deleteEnteredContinuation: CheckedContinuation<Void, Never>?
-        var releaseDeleteAContinuation: CheckedContinuation<Void, Never>?
+        let enteredDeleteAGate = AsyncTestGate()
+        let releaseDeleteAGate = AsyncTestGate()
 
         let testToken = GoogleOAuthToken(
             accessToken: "mock-token",
@@ -1916,11 +1916,8 @@ final class SmartSchedulerTests: XCTestCase {
                 let url = try XCTUnwrap(req.url)
                 let method = req.httpMethod ?? "GET"
                 if method == "DELETE" && url.path.hasSuffix("/evt-delete-a") {
-                    deleteEnteredContinuation?.resume()
-                    deleteEnteredContinuation = nil
-                    await withCheckedContinuation { cont in
-                        releaseDeleteAContinuation = cont
-                    }
+                    enteredDeleteAGate.open()
+                    await releaseDeleteAGate.wait()
                     return (Data(), HTTPURLResponse(url: url, statusCode: 204, httpVersion: nil, headerFields: nil)!)
                 }
                 let emptyList = try JSONEncoder().encode(GoogleEventListResponse(items: [], nextPageToken: nil))
@@ -1941,15 +1938,13 @@ final class SmartSchedulerTests: XCTestCase {
             )
         }
 
-        await withCheckedContinuation { cont in
-            deleteEnteredContinuation = cont
-        }
+        await enteredDeleteAGate.wait()
 
         // Enqueue deletion B while deletion A is suspended awaiting network completion!
         prefs.enqueueGoogleDeletion(itemB)
         XCTAssertEqual(prefs.pendingGoogleDeletions, [itemA, itemB])
 
-        releaseDeleteAContinuation?.resume()
+        releaseDeleteAGate.open()
         let outcome = try await inFlightTask.value
 
         XCTAssertEqual(outcome.removed, 1)
@@ -2759,4 +2754,32 @@ private final class MockEventStoreBacking: EventStoreBacking {
         )
     }
 }
+
+@MainActor
+private final class AsyncTestGate {
+    private(set) var isOpen = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let pending = continuations
+        continuations.removeAll()
+        for cont in pending {
+            cont.resume()
+        }
+    }
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { cont in
+            if isOpen {
+                cont.resume()
+            } else {
+                continuations.append(cont)
+            }
+        }
+    }
+}
+
 

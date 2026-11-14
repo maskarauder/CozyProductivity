@@ -66,6 +66,9 @@ final class NotificationManager {
     }
 
     func requestPermissionIfNeeded() async -> Bool {
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return false
+        }
         await refreshAuthorizationStatus()
         if authorizationStatus == .notDetermined {
             let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(

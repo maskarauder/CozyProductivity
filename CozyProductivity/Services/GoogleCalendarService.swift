@@ -149,6 +149,7 @@ final class GoogleCalendarService {
     private let httpLoader: HTTPDataLoader
     private let freeTimeService: CalendarFreeTimeService
     private let persistTokensToKeychain: Bool
+    private let performNotificationSync: Bool
 
     var maxCachedBusySnapshotAgeSeconds: TimeInterval = GoogleCalendarService.defaultMaxCachedBusySnapshotAgeSeconds
 
@@ -174,6 +175,7 @@ final class GoogleCalendarService {
         }
         self.freeTimeService = CalendarFreeTimeService.shared
         self.persistTokensToKeychain = true
+        self.performNotificationSync = true
         self.token = KeychainHelper.loadCodable(GoogleOAuthToken.self, account: Self.tokenKeychainAccount)
     }
 
@@ -181,11 +183,13 @@ final class GoogleCalendarService {
         httpLoader: @escaping HTTPDataLoader,
         initialToken: GoogleOAuthToken? = nil,
         freeTimeService: CalendarFreeTimeService? = nil,
-        persistTokensToKeychain: Bool = false
+        persistTokensToKeychain: Bool = false,
+        performNotificationSync: Bool = false
     ) {
         self.httpLoader = httpLoader
         self.freeTimeService = freeTimeService ?? CalendarFreeTimeService.shared
         self.persistTokensToKeychain = persistTokensToKeychain
+        self.performNotificationSync = performNotificationSync
         self.token = initialToken
     }
 
@@ -503,7 +507,7 @@ final class GoogleCalendarService {
         )
         statusParts.append(contentsOf: pushResult.statusParts)
 
-        if includeRebalance {
+        if includeRebalance && performNotificationSync {
             let digestOccurrences = NotificationManager.fetchOccurrencesForSummarySync(
                 context: context,
                 now: referenceDate,
