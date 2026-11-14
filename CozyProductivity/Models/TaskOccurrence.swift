@@ -162,9 +162,11 @@ final class TaskOccurrence {
         completedAt = date
     }
 
-    /// Captures live template fields into frozen snapshots right before an occurrence transitions out of `.pending`.
+    /// Captures live template fields into frozen snapshots right before an occurrence transitions out of `.pending`,
+    /// or backfills any missing legacy snapshot fields without overwriting already-frozen completed/skipped history.
     func freezeSnapshotsFromCurrentState(calendar: Calendar = DateHelpers.calendar) {
-        if let template {
+        guard let template else { return }
+        if status == .pending {
             titleSnapshot = template.title
             emojiSnapshot = template.emoji
             durationMinutesSnapshot = template.durationMinutes
@@ -178,6 +180,28 @@ final class TaskOccurrence {
             let deadline = effectiveHardDeadline(calendar: calendar)
             hardDeadlineSnapshot = deadline
             hardDeadlineSnapshotDayKey = deadline.map { DateHelpers.dayKeyString(for: $0, calendar: calendar) } ?? ""
+        } else {
+            if titleSnapshot.isEmpty {
+                titleSnapshot = template.title
+            }
+            if emojiSnapshot.isEmpty {
+                emojiSnapshot = template.emoji
+            }
+            if durationMinutesSnapshot <= 0 {
+                durationMinutesSnapshot = template.durationMinutes
+            }
+            if weightSnapshotRaw.isEmpty {
+                weightSnapshotRaw = template.weight.rawValue
+            }
+            if recurrenceKindSnapshotRaw.isEmpty {
+                recurrenceKindSnapshotRaw = template.recurrence.rawValue
+            }
+            if recurrenceLabelSnapshot.isEmpty {
+                recurrenceLabelSnapshot = template.recurrenceDisplayLabel
+            }
+            if categorySnapshotRaw.isEmpty {
+                categorySnapshotRaw = template.category.rawValue
+            }
         }
     }
 

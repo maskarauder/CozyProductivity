@@ -1024,16 +1024,16 @@ final class SmartSchedulerTests: XCTestCase {
         context.insert(futureOne)
         context.insert(futureTwo)
 
-        let occToday = TaskOccurrence(scheduledDate: monday, periodKey: "day|2026-11-09", status: .pending, template: todayTask)
-        let occFuture1 = TaskOccurrence(scheduledDate: wednesday, periodKey: "once|1", status: .pending, template: futureOne)
-        let occFuture2 = TaskOccurrence(scheduledDate: thursday, periodKey: "once|2", status: .pending, template: futureTwo)
+        let occToday = TaskOccurrence(scheduledDate: monday, periodKey: "day|2026-11-09", status: .pending, template: todayTask, calendar: testCalendar)
+        let occFuture1 = TaskOccurrence(scheduledDate: wednesday, periodKey: "once|1", status: .pending, template: futureOne, calendar: testCalendar)
+        let occFuture2 = TaskOccurrence(scheduledDate: thursday, periodKey: "once|2", status: .pending, template: futureTwo, calendar: testCalendar)
         context.insert(occToday)
         context.insert(occFuture1)
         context.insert(occFuture2)
 
         let allOccurrences = [occToday, occFuture1, occFuture2]
 
-        // With optional bonus tasks enabled, 2 bonus slots are assigned for Monday
+        // While today's base task is still pending, optional bonus slots stay hidden
         StreakAndBonusService.syncBonusSlots(
             context: context,
             occurrences: allOccurrences,
@@ -1041,12 +1041,22 @@ final class SmartSchedulerTests: XCTestCase {
             today: monday,
             calendar: testCalendar
         )
-        XCTAssertEqual(allOccurrences.filter { $0.bonusForDate == monday }.count, 2)
+        XCTAssertEqual(allOccurrences.filter { $0.bonusDay(calendar: testCalendar) == monday }.count, 0)
 
-        // Completing only base tasks while optional bonus tasks are enabled yields Bronze/Pink (.base), not Gold
+        // Once today's base task is completed, 2 optional bonus slots unlock for Monday while Monday's tier is Bronze/Pink (.base)
         occToday.markCompleted(at: monday, calendar: testCalendar)
         XCTAssertTrue(occToday.isCompleted)
         XCTAssertEqual(occToday.completedAt, monday)
+
+        StreakAndBonusService.syncBonusSlots(
+            context: context,
+            occurrences: allOccurrences,
+            preferences: prefs,
+            today: monday,
+            calendar: testCalendar
+        )
+        XCTAssertEqual(allOccurrences.filter { $0.bonusDay(calendar: testCalendar) == monday }.count, 2)
+
         let withBonusEnabled = StreakAndBonusService.evaluate(
             occurrences: allOccurrences,
             optionalBonusTasksEnabled: true,
