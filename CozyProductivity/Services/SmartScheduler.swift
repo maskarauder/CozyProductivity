@@ -65,9 +65,9 @@ struct DayCapacitySummary: Identifiable, Equatable {
 
 @MainActor
 enum SmartScheduler {
-    static let defaultHorizonDays = 35
-    static let operationalHistoryBufferDays = 69
-    static let streakArchiveCutoffDays = 62
+    nonisolated static let defaultHorizonDays = 35
+    nonisolated static let operationalHistoryBufferDays = 69
+    nonisolated static let streakArchiveCutoffDays = 62
 
     // MARK: - Core Rebalance Entry Point
 

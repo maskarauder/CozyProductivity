@@ -16,7 +16,7 @@ struct CozySettingsView: View {
     @State private var showingCupPromptSheet = false
     @State private var testNotificationStatusMessage: String?
     @State private var googleAuthErrorMessage: String?
-    private var googleService = GoogleCalendarService.shared
+    private var googleService: GoogleCalendarService { GoogleCalendarService.shared }
 
     private let orderedWeekdays = [2, 3, 4, 5, 6, 7, 1] // Monday -> Sunday
 
