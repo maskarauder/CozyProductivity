@@ -187,10 +187,14 @@ jobs:
           PY
           )
           echo "Running unit tests on Simulator UDID: $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
           xcodebuild test \
             -project CozyProductivity.xcodeproj \
             -scheme CozyProductivity \
             -destination "platform=iOS Simulator,id=${UDID}" \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 60 \
             CODE_SIGNING_ALLOWED=NO \
             COMPILER_INDEX_STORE_ENABLE=NO
 

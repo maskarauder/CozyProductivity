@@ -46,6 +46,8 @@ jobs:
           )
           echo "Selected Simulator UDID: $UDID"
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
 
       - name: Build & Test CozyProductivity
         run: |
@@ -53,6 +55,8 @@ jobs:
             -project CozyProductivity.xcodeproj \
             -scheme CozyProductivity \
             -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 60 \
             CODE_SIGNING_ALLOWED=NO \
             COMPILER_INDEX_STORE_ENABLE=NO
 
