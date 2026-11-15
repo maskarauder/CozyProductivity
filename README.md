@@ -2,6 +2,26 @@
 
 A calm, pastel-pink iPhone task tracking app (**Cozy**) built natively with **SwiftUI**, **SwiftData**, **AppIntents**, **EventKit**, **AuthenticationServices**, and **UserNotifications** (iOS 17+).
 
+## Preview & Interactive Demo
+
+> **Try it in your browser or grab the Beta build:**
+> - 🌸 **[Launch Live Interactive HTML Demo →](https://maskarauder.github.io/CozyProductivity/)** *(check off tasks with pastel confetti, test the Morning Cup check-in, toggle **ADD Friendly Mode**, and try natural Siri phrases — standalone file at [`docs/index.html`](docs/index.html))*
+> - 📦 **[Download Beta Signed IPA (`v1.0-beta.5`) →](https://github.com/maskarauder/CozyProductivity/releases/tag/v1.0-beta.5)** *(cloud-signed TestFlight Beta build & `dSYMs`)*
+
+<div align="center">
+
+| **Today's Checklist** | **Morning Cup (`0–5h`)** | **Cozy Calendar & Ranks** |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/today.png" alt="Cozy Today's Checklist screen showing daily progress, Light and Normal task cards, and a Hard Deadline badge" width="250" /> | <img src="docs/screenshots/cup.png" alt="Cozy Morning Cup modal asking How full is your cup today from 0 to 5 hours with 4:00 AM reset" width="250" /> | <img src="docs/screenshots/calendar.png" alt="Cozy Calendar month view with Bronze, Silver, and Gold day medals and streak counters" width="250" /> |
+| Daily progress, task weights & Hard Deadlines<br/>[**Open interactively ↗**](https://maskarauder.github.io/CozyProductivity/?view=today) | *“How full is your cup today?”* (4 AM reset)<br/>[**Open interactively ↗**](https://maskarauder.github.io/CozyProductivity/?view=cup) | Bronze, Silver & Gold ✨ days + streaks<br/>[**Open interactively ↗**](https://maskarauder.github.io/CozyProductivity/?view=calendar) |
+
+| **Siri & 7-Day Planner** | **Settings & ADD Friendly Mode** |
+| :---: | :---: |
+| <img src="docs/screenshots/schedule.png" alt="Cozy Schedule and Siri screen showing natural voice phrase capture and 7-day capacity bar chart" width="250" /> | <img src="docs/screenshots/settings.png" alt="Cozy Settings screen with ADD Friendly Mode, 4 independent gamification toggles, and Google/Apple Calendar auto-sync" width="250" /> |
+| Natural Siri voice capture & smart rebalance<br/>[**Open interactively ↗**](https://maskarauder.github.io/CozyProductivity/?view=schedule) | Low-text **ADD Friendly Mode**, 4 gamification toggles & calendar sync<br/>[**Open interactively ↗**](https://maskarauder.github.io/CozyProductivity/?view=settings) |
+
+</div>
+
 ## Features
 
 - **ADD Friendly Mode (Low-Text Focus Mode)**:

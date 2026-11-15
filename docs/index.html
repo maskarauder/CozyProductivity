@@ -1,0 +1,1626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cozy 🌸 — Interactive iPhone App Demo</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      border-width: 0;
+      border-style: solid;
+      border-color: #F5CCDE;
+    }
+    html {
+      line-height: 1.45;
+      -webkit-text-size-adjust: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, "Liberation Sans", "DejaVu Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
+    }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 50% 0%, #FFF5FA 0%, #FDF2F8 55%, #F9F2FF 100%);
+      color: #4D3340;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    body.screenshot-mode {
+      background: transparent;
+      min-height: 0;
+      padding: 0 !important;
+      display: inline-block;
+    }
+    body.screenshot-mode .demo-outer {
+      max-width: none;
+      margin: 0;
+      padding: 12px;
+      background: transparent;
+    }
+    body.screenshot-mode #appRoot {
+      width: 390px;
+      height: 800px;
+      min-height: 800px !important;
+      box-shadow: 0 14px 34px rgba(184, 87, 128, 0.18);
+    }
+    h1, h2, h3, p { margin: 0; }
+    button, input, select {
+      font-family: inherit;
+      font-size: 100%;
+      font-weight: inherit;
+      line-height: inherit;
+      color: inherit;
+      margin: 0;
+      padding: 0;
+      background-color: transparent;
+      background-image: none;
+    }
+    button { cursor: pointer; }
+    svg, canvas { display: block; }
+
+    /* Layout & Positioning */
+    .hidden { display: none !important; }
+    .block { display: block; }
+    .inline-block { display: inline-block; }
+    .flex { display: flex; }
+    .grid { display: grid; }
+    .relative { position: relative; }
+    .absolute { position: absolute; }
+    .inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
+    .inset-x-0 { left: 0; right: 0; }
+    .inset-x-4 { left: 1rem; right: 1rem; }
+    .top-3 { top: 0.75rem; }
+    .bottom-0 { bottom: 0; }
+    .z-40 { z-index: 40; }
+    .z-45 { z-index: 45; }
+    .z-50 { z-index: 50; }
+
+    /* Sizing */
+    .max-w-md { max-width: 26rem; }
+    .mx-auto { margin-left: auto; margin-right: auto; }
+    .w-full { width: 100%; }
+    .h-full { height: 100%; }
+    .w-3 { width: 0.75rem; }
+    .h-3 { height: 0.75rem; }
+    .w-7 { width: 1.75rem; }
+    .h-7 { height: 1.75rem; }
+    .w-8 { width: 2rem; }
+    .h-8 { height: 2rem; }
+    .h-10 { height: 2.5rem; }
+    .w-14 { width: 3.5rem; }
+    .h-14 { height: 3.5rem; }
+    .h-20 { height: 5rem; }
+    .h-32 { height: 8rem; }
+    .min-w-0 { min-width: 0; }
+    .flex-1 { flex: 1 1 0%; }
+    .shrink-0 { flex-shrink: 0; }
+
+    /* Flex & Grid */
+    .flex-col { flex-direction: column; }
+    .flex-wrap { flex-wrap: wrap; }
+    .items-start { align-items: flex-start; }
+    .items-center { align-items: center; }
+    .items-end { align-items: flex-end; }
+    .justify-center { justify-content: center; }
+    .justify-between { justify-content: space-between; }
+    .justify-around { justify-content: space-around; }
+    .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .grid-cols-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+    .grid-cols-7 { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+    .gap-0\.5 { gap: 0.125rem; }
+    .gap-1 { gap: 0.25rem; }
+    .gap-1\.5 { gap: 0.375rem; }
+    .gap-2 { gap: 0.5rem; }
+    .gap-2\.5 { gap: 0.625rem; }
+    .gap-3 { gap: 0.75rem; }
+    .gap-4 { gap: 1rem; }
+
+    /* Spacing */
+    .p-2 { padding: 0.5rem; }
+    .p-3 { padding: 0.75rem; }
+    .p-3\.5 { padding: 0.875rem; }
+    .p-4 { padding: 1rem; }
+    .p-5 { padding: 1.25rem; }
+    .pb-28 { padding-bottom: 6.5rem; }
+    .pt-1 { padding-top: 0.25rem; }
+    .pt-2 { padding-top: 0.5rem; }
+    .pt-3 { padding-top: 0.75rem; }
+    .px-1\.5 { padding-left: 0.375rem; padding-right: 0.375rem; }
+    .px-2 { padding-left: 0.5rem; padding-right: 0.5rem; }
+    .px-2\.5 { padding-left: 0.625rem; padding-right: 0.625rem; }
+    .px-3 { padding-left: 0.75rem; padding-right: 0.75rem; }
+    .px-4 { padding-left: 1rem; padding-right: 1rem; }
+    .px-6 { padding-left: 1.5rem; padding-right: 1.5rem; }
+    .px-8 { padding-left: 2rem; padding-right: 2rem; }
+    .py-0\.5 { padding-top: 0.125rem; padding-bottom: 0.125rem; }
+    .py-1 { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+    .py-1\.5 { padding-top: 0.375rem; padding-bottom: 0.375rem; }
+    .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+    .py-2\.5 { padding-top: 0.625rem; padding-bottom: 0.625rem; }
+    .py-3 { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+    .py-6 { padding-top: 1.5rem; padding-bottom: 1.5rem; }
+    .mt-0\.5 { margin-top: 0.125rem; }
+    .mt-1 { margin-top: 0.25rem; }
+
+    .space-y-1 > :not(.hidden):not([hidden]) ~ :not(.hidden):not([hidden]) { margin-top: 0.25rem; }
+    .space-y-1\.5 > :not(.hidden):not([hidden]) ~ :not(.hidden):not([hidden]) { margin-top: 0.375rem; }
+    .space-y-2 > :not(.hidden):not([hidden]) ~ :not(.hidden):not([hidden]) { margin-top: 0.5rem; }
+    .space-y-2\.5 > :not(.hidden):not([hidden]) ~ :not(.hidden):not([hidden]) { margin-top: 0.625rem; }
+    .space-y-3 > :not(.hidden):not([hidden]) ~ :not(.hidden):not([hidden]) { margin-top: 0.75rem; }
+    .space-y-3\.5 > :not(.hidden):not([hidden]) ~ :not(.hidden):not([hidden]) { margin-top: 0.875rem; }
+    .space-y-4 > :not(.hidden):not([hidden]) ~ :not(.hidden):not([hidden]) { margin-top: 1rem; }
+
+    /* Borders & Radius */
+    .border { border-width: 1px; }
+    .border-2 { border-width: 2px; }
+    .border-t { border-top-width: 1px; }
+    .rounded { border-radius: 0.25rem; }
+    .rounded-lg { border-radius: 0.5rem; }
+    .rounded-xl { border-radius: 0.75rem; }
+    .rounded-2xl { border-radius: 1rem; }
+    .rounded-3xl { border-radius: 1.5rem; }
+    .rounded-\[28px\] { border-radius: 28px; }
+    .rounded-\[30px\] { border-radius: 30px; }
+    .rounded-\[34px\] { border-radius: 34px; }
+    .rounded-full { border-radius: 9999px; }
+    .overflow-hidden { overflow: hidden; }
+
+    /* Typography */
+    .text-\[8px\] { font-size: 8px; }
+    .text-\[9px\] { font-size: 9px; }
+    .text-\[10px\] { font-size: 10px; }
+    .text-\[11px\] { font-size: 11px; }
+    .text-xs { font-size: 0.75rem; line-height: 1rem; }
+    .text-sm { font-size: 0.875rem; line-height: 1.25rem; }
+    .text-base { font-size: 1rem; line-height: 1.4rem; }
+    .text-lg { font-size: 1.125rem; line-height: 1.5rem; }
+    .text-xl { font-size: 1.25rem; line-height: 1.65rem; }
+    .text-2xl { font-size: 1.5rem; line-height: 1.9rem; }
+    .text-3xl { font-size: 1.875rem; line-height: 2.2rem; }
+    .text-4xl { font-size: 2.25rem; line-height: 2.5rem; }
+    .font-medium { font-weight: 500; }
+    .font-semibold { font-weight: 600; }
+    .font-bold { font-weight: 700; }
+    .font-extrabold { font-weight: 800; }
+    .font-black { font-weight: 900; }
+    .leading-none { line-height: 1; }
+    .leading-tight { line-height: 1.25; }
+    .tracking-tight { letter-spacing: -0.02em; }
+    .tracking-wider { letter-spacing: 0.05em; }
+    .text-left { text-align: left; }
+    .text-center { text-align: center; }
+    .text-white { color: #FFFFFF; }
+    .line-through { text-decoration: line-through; }
+    .truncate {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Effects & Interactivity */
+    .opacity-0 { opacity: 0; }
+    .opacity-55 { opacity: 0.55; }
+    .opacity-60 { opacity: 0.6; }
+    .opacity-85 { opacity: 0.85; }
+    .opacity-90 { opacity: 0.9; }
+    .shadow { box-shadow: 0 2px 6px rgba(184, 87, 128, 0.16); }
+    .shadow-md { box-shadow: 0 6px 16px rgba(184, 87, 128, 0.16); }
+    .shadow-xl { box-shadow: 0 20px 44px rgba(184, 87, 128, 0.18); }
+    .shadow-2xl { box-shadow: 0 24px 48px rgba(77, 51, 64, 0.24); }
+    .backdrop-blur-md { backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+    .outline-none { outline: none; }
+    .select-none { user-select: none; -webkit-user-select: none; }
+    .pointer-events-none { pointer-events: none; }
+    .cursor-pointer { cursor: pointer; }
+    .-rotate-90 { transform: rotate(-90deg); }
+    .-translate-y-3 { transform: translateY(-0.75rem); }
+    .scale-75 { transform: scale(0.75); }
+    .transition { transition: all 0.18s ease; }
+    .transition-all { transition: all 0.25s ease; }
+    .duration-300 { transition-duration: 300ms; }
+    .hover\:opacity-80:hover { opacity: 0.8; }
+    .active\:scale-95:active { transform: scale(0.95); }
+    .active\:scale-\[0\.985\]:active { transform: scale(0.985); }
+    .active\:scale-\[0\.99\]:active { transform: scale(0.99); }
+    input[type="checkbox"] {
+      width: 1rem;
+      height: 1rem;
+      accent-color: #E0709E;
+      cursor: pointer;
+    }
+
+    @media (min-width: 640px) {
+      .sm\:items-center { align-items: center; }
+    }
+    @media (min-width: 768px) {
+      .md\:p-6 { padding: 1.5rem; }
+    }
+  </style>
+</head>
+<body class="p-4 md:p-6">
+  <div class="demo-outer max-w-md mx-auto">
+    <div id="appRoot" class="relative overflow-hidden rounded-[34px] border shadow-xl select-none"
+         style="background: linear-gradient(160deg, #FFF2F7 0%, #FFF7FA 55%, #FAF2FC 100%); border-color: #F5CCDE; color: #4D3340; min-height: 780px;">
+
+      <!-- iOS Status Bar -->
+      <div class="flex items-center justify-between px-6 pt-3 text-xs font-bold" style="color:#4D3340;">
+        <span>9:41</span>
+        <div class="w-20 h-5 rounded-full" style="background:#2A1B23; width: 88px; height: 22px;"></div>
+        <span class="text-[11px]">5G · 100%</span>
+      </div>
+
+      <!-- Confetti Canvas Overlay -->
+      <canvas id="confettiCanvas" class="pointer-events-none absolute inset-0 z-40 w-full h-full"></canvas>
+
+      <!-- Toast Banner -->
+      <div id="cheerBanner" class="pointer-events-none absolute top-3 inset-x-4 z-50 flex justify-center transition-all duration-300 opacity-0 -translate-y-3">
+        <div class="px-4 py-2.5 rounded-2xl text-xs font-semibold shadow-md flex items-center gap-2 text-center"
+             style="background: rgba(255,255,255,0.97); border: 1px solid #F5CCDE; color: #4D3340;">
+          <span>✨</span>
+          <span id="cheerText">Lovely job! 🌸</span>
+        </div>
+      </div>
+
+      <!-- Centerpiece Gold "PERFECT" + Optional "Streak Days X" Hero Modal -->
+      <div id="perfectModal" class="pointer-events-none absolute inset-0 z-50 flex items-center justify-center px-6 transition-all duration-300 opacity-0 scale-75">
+        <div class="px-8 py-6 rounded-[30px] shadow-2xl text-center space-y-2 border-2"
+             style="background: rgba(255,255,255,0.97); border-color: #DF9E23; box-shadow: 0 18px 40px rgba(217,154,34,0.34);">
+          <div class="text-2xl">✨ 🥇 ✨</div>
+          <div class="text-4xl font-black tracking-wider"
+               style="background: linear-gradient(90deg, #E39D1C, #EA6F9E, #F2B629); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            PERFECT
+          </div>
+          <div id="perfectStreakPill" class="inline-block px-4 py-1 rounded-full text-xs font-bold border"
+               style="background: linear-gradient(135deg, #FFF0AD, #F7C654); border-color: #D99A22; color: #5E4006;">
+            Streak Days 3
+          </div>
+        </div>
+      </div>
+
+      <!-- Morning "How full is your cup today?" Modal (Full Cozy vs ADD Friendly Hours-Only) -->
+      <div id="cupModal" class="hidden absolute inset-0 z-45 flex items-end sm:items-center justify-center p-4"
+           style="background: rgba(77, 51, 64, 0.28); backdrop-filter: blur(4px);">
+        <div id="cupModalInner" class="w-full rounded-[28px] p-5 border shadow-2xl space-y-3"
+             style="background: linear-gradient(160deg, #FFF6FA 0%, #FFF0F6 100%); border-color:#F5CCDE;"></div>
+      </div>
+
+      <!-- New / Edit Task Modal (Adjust Weight & Duration anytime; defaults to Light 30m Once) -->
+      <div id="editTaskModal" class="hidden absolute inset-0 z-45 flex items-end sm:items-center justify-center p-4"
+           style="background: rgba(77, 51, 64, 0.28); backdrop-filter: blur(4px);">
+        <div class="w-full rounded-[28px] p-5 border shadow-2xl space-y-3"
+             style="background: linear-gradient(160deg, #FFF6FA 0%, #FFF0F6 100%); border-color:#F5CCDE;">
+          <div class="flex items-center justify-between">
+            <h2 id="editModalHeading" class="text-base font-extrabold" style="color:#4D3340;">Edit Task</h2>
+            <button onclick="closeEditModal()" class="px-2.5 py-1 rounded-full text-xs font-bold"
+                    style="background:#FCE3ED; color:#B85780;">Cancel</button>
+          </div>
+          <div class="space-y-1">
+            <label class="text-[11px] font-bold" style="color:#8C6B7D;">Title</label>
+            <input id="editTitleInput" type="text" placeholder="e.g., Take out the trash"
+                   class="w-full px-3 py-2 rounded-xl border text-xs font-semibold outline-none"
+                   style="background:#FFFFFF; border-color:#F5CCDE; color:#4D3340;" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-[11px] font-bold" style="color:#8C6B7D;">Duration</label>
+            <div id="editDurationButtons" class="grid grid-cols-5 gap-1"></div>
+          </div>
+          <div class="space-y-1">
+            <label id="editWeightLabel" class="text-[11px] font-bold" style="color:#8C6B7D;">Weight</label>
+            <div id="editWeightButtons" class="grid grid-cols-3 gap-1.5"></div>
+          </div>
+          <label class="flex items-center justify-between px-3 py-2 rounded-2xl border cursor-pointer"
+                 style="background:rgba(255,255,255,0.85); border-color:#F5CCDE;">
+            <span id="editDeadlineLabel" class="text-xs font-semibold" style="color:#4D3340;">📌 Hard Deadline (Force Due Today)</span>
+            <input id="editDeadlineToggle" type="checkbox" />
+          </label>
+          <button onclick="saveEditModal()"
+                  class="w-full py-3 rounded-2xl text-xs font-bold text-white shadow transition active:scale-[0.99]"
+                  style="background: linear-gradient(135deg, #F08CB4, #E0709E);">
+            Save
+          </button>
+        </div>
+      </div>
+
+      <!-- Content Area -->
+      <div class="p-5 pb-28 space-y-3.5" style="padding-top: 0.75rem;">
+        <!-- Quick Mode Pill Bar -->
+        <div class="flex items-center justify-between gap-2 px-3 py-1.5 rounded-2xl border text-[11px]"
+             style="background:rgba(255,255,255,0.86); border-color:#F5CCDE;">
+          <span class="font-bold" style="color:#B85780;">🌸 Cozy</span>
+          <div class="flex items-center gap-1.5">
+            <button onclick="setAddFriendlyMode(!addFriendlyMode)" id="quickAddFriendlyBtn"
+                    class="px-2.5 py-0.5 rounded-full font-bold border transition text-[10px]"></button>
+            <button onclick="openNewTaskModal()"
+                    class="px-2.5 py-0.5 rounded-full font-bold text-white transition text-[10px]"
+                    style="background:linear-gradient(135deg,#F08CB4,#E0709E);">+ Task</button>
+          </div>
+        </div>
+
+        <!-- TAB 1: TODAY -->
+        <section id="tab-today" class="space-y-3">
+          <div class="flex items-start justify-between gap-2">
+            <div>
+              <h1 id="todayGreeting" class="text-xl font-bold tracking-tight" style="color:#4D3340;">Good morning 🌸</h1>
+              <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                <p id="todayDateSub" class="text-xs font-medium" style="color:#8C6B7D;">Sat, Nov 14</p>
+                <span id="headerStreakPill" class="px-2 py-0.5 rounded-full text-xs font-bold"
+                      style="background:#FFF0C7; color:#7A5612;">🔥 Streak 2d</span>
+              </div>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <button onclick="openCupModal()" id="headerCupBtn"
+                      class="px-2.5 py-1.5 rounded-full text-xs font-bold border transition active:scale-95"
+                      style="background:#FCE3ED; border-color:#F5CCDE; color:#B85780;">
+                🍵 Cup 2h
+              </button>
+              <button onclick="rebalanceTasks(true)" id="headerBalanceBtn"
+                      class="px-2.5 py-1.5 rounded-full text-xs font-bold transition active:scale-95"
+                      style="background:#FAD6E5; color:#B85780;">
+                ✨ Balance
+              </button>
+            </div>
+          </div>
+
+          <!-- Progress Ring Card -->
+          <div id="todayHeroCard" class="p-4 rounded-3xl flex items-center gap-4 border transition-all duration-300"
+               style="background: linear-gradient(135deg, #FFE8F2 0%, #FADCEB 100%); border-color:#F5CCDE;">
+            <div class="relative w-14 h-14 shrink-0 flex items-center justify-center">
+              <svg class="w-14 h-14 -rotate-90" viewBox="0 0 64 64">
+                <circle cx="32" cy="32" r="26" fill="none" stroke="#F8C8DC" stroke-width="7" />
+                <circle id="progressArc" cx="32" cy="32" r="26" fill="none" stroke="#E87AA6"
+                        stroke-width="7" stroke-linecap="round" stroke-dasharray="163.36" stroke-dashoffset="163.36"
+                        style="transition: stroke-dashoffset 0.45s ease;" />
+              </svg>
+              <div id="ringCenter" class="absolute inset-0 flex flex-col items-center justify-center leading-tight">
+                <span id="progressRatio" class="text-xs font-bold" style="color:#4D3340;">0/3</span>
+              </div>
+            </div>
+            <div class="space-y-1 flex-1 min-w-0">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <p id="progressHeadline" class="text-sm font-bold" style="color:#4D3340;">Today's Cozy Checklist 🌸</p>
+                <span id="todayTierBadge" class="hidden px-2 py-0.5 rounded-full text-[10px] font-bold border"></span>
+              </div>
+              <p id="progressSub" class="text-xs" style="color:#8C6B7D;"></p>
+            </div>
+          </div>
+
+          <!-- Base Checklist Cards -->
+          <div id="todayCards" class="space-y-2.5"></div>
+
+          <!-- Unlocked Optional Bonus Tasks (Next 7 Days) -->
+          <div id="bonusSection" class="hidden p-3.5 rounded-3xl border space-y-2 transition-all"
+               style="background: rgba(255,255,255,0.84); border-color:#F5CCDE;">
+            <div class="flex items-center justify-between">
+              <span id="bonusTitle" class="text-xs font-bold" style="color:#B85780;">✨ Optional Bonus Tasks (Next 7 Days)</span>
+              <span id="bonusHintRight" class="text-[11px] font-medium" style="color:#8C6B7D;">1 = 🥈 Silver · 2 = 🥇 Gold</span>
+            </div>
+            <p id="bonusSubtitle" class="text-xs" style="color:#8C6B7D;">Silver preserves your streak · Gold fires PERFECT &amp; increments streak!</p>
+            <div id="bonusCards" class="space-y-2"></div>
+          </div>
+        </section>
+
+        <!-- TAB 2: MONTH & YEAR CALENDAR -->
+        <section id="tab-calendar" class="hidden space-y-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <h1 id="calHeaderTitle" class="text-xl font-bold" style="color:#4D3340;">Cozy Calendar</h1>
+              <p id="calHeaderSub" class="text-xs" style="color:#8C6B7D;">Predicted upcoming tasks + Bronze / Silver / Gold streaks</p>
+            </div>
+            <button onclick="jumpTodayCal()" class="px-3 py-1 rounded-full text-xs font-bold"
+                    style="background:#FAD6E5; color:#B85780;">Today</button>
+          </div>
+
+          <!-- Streak Stats (hidden when streaksEnabled == false) -->
+          <div id="calStreakCard" class="p-3 rounded-3xl border space-y-2"
+               style="background: linear-gradient(135deg, #FFE8F2 0%, #FADCEB 100%); border-color:#F5CCDE;">
+            <div class="grid grid-cols-2 gap-2.5">
+              <div class="p-2.5 rounded-2xl flex items-center gap-2.5" style="background:rgba(255,255,255,0.88);">
+                <span class="text-lg">🔥</span>
+                <div>
+                  <div id="calCurrentStreak" class="text-lg font-black leading-none" style="color:#4D3340;">2 days</div>
+                  <div class="text-[11px] font-semibold mt-0.5" style="color:#8C6B7D;">Current Streak</div>
+                </div>
+              </div>
+              <div class="p-2.5 rounded-2xl flex items-center gap-2.5" style="background:rgba(255,255,255,0.88);">
+                <span class="text-lg">👑</span>
+                <div>
+                  <div id="calLongestStreak" class="text-lg font-black leading-none" style="color:#4D3340;">5 days</div>
+                  <div class="text-[11px] font-semibold mt-0.5" style="color:#8C6B7D;">Longest Streak</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Month & Year Nav + Grid -->
+          <div class="p-3.5 rounded-3xl border space-y-2.5" style="background:rgba(255,255,255,0.92); border-color:#F5CCDE;">
+            <div class="flex items-center justify-between gap-1">
+              <div class="flex items-center gap-1">
+                <button onclick="shiftCalYear(-1)" class="px-2 py-1 rounded-full text-xs font-bold" style="background:#FCE3ED; color:#B85780;">« Yr</button>
+                <button onclick="shiftCalMonth(-1)" class="w-7 h-7 rounded-full text-xs font-bold" style="background:#FCE3ED; color:#B85780;">‹</button>
+              </div>
+              <span id="calMonthTitle" class="text-sm font-bold" style="color:#4D3340;">November 2026</span>
+              <div class="flex items-center gap-1">
+                <button onclick="shiftCalMonth(1)" class="w-7 h-7 rounded-full text-xs font-bold" style="background:#FCE3ED; color:#B85780;">›</button>
+                <button onclick="shiftCalYear(1)" class="px-2 py-1 rounded-full text-xs font-bold" style="background:#FCE3ED; color:#B85780;">Yr »</button>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-7 gap-1.5 text-center text-[11px] font-bold" style="color:#B394A3;">
+              <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+            </div>
+            <div id="calGrid" class="grid grid-cols-7 gap-1.5"></div>
+
+            <!-- Legend + Base Color Switcher (hidden when dayRanksEnabled == false) -->
+            <div id="calRankLegend" class="pt-2 border-t space-y-2" style="border-color:#F5CCDE;">
+              <div class="flex items-center justify-between text-xs" style="color:#8C6B7D;">
+                <span class="flex items-center gap-1"><span id="legendBaseDot" class="w-3 h-3 rounded inline-block border"></span> <span id="legendBaseLabel">Bronze</span></span>
+                <span id="legendSilverWrap" class="flex items-center gap-1"><span class="w-3 h-3 rounded inline-block border" style="background:linear-gradient(135deg,#EEF1F8,#CFD7E8); border-color:#9AA6BF;"></span> Silver</span>
+                <span class="flex items-center gap-1"><span class="w-3 h-3 rounded inline-block border" style="background:linear-gradient(135deg,#FFF0AD,#F7C654); border-color:#D99A22;"></span> Gold</span>
+              </div>
+              <div id="calBaseColorRow" class="flex items-center justify-between text-xs">
+                <span style="color:#8C6B7D;">Base highlight:</span>
+                <div class="flex gap-1.5">
+                  <button onclick="setBaseColor('bronze')" id="btnBronze" class="px-2.5 py-0.5 rounded-full text-xs font-bold border" style="background:#FCE3ED; border-color:#F5CCDE; color:#B85780;">Rose Bronze</button>
+                  <button onclick="setBaseColor('pink')" id="btnPink" class="px-2.5 py-0.5 rounded-full text-xs font-bold border" style="background:#FFF; border-color:#F5CCDE; color:#8C6B7D;">Pastel Pink</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="calDayDetail" class="p-3 rounded-2xl border text-xs space-y-1"
+               style="background:rgba(255,255,255,0.9); border-color:#F5CCDE;"></div>
+        </section>
+
+        <!-- TAB 3: SCHEDULE & SIRI -->
+        <section id="tab-schedule" class="hidden space-y-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <h1 id="schedHeaderTitle" class="text-xl font-bold" style="color:#4D3340;">Schedule &amp; Siri</h1>
+              <p id="schedHeaderSub" class="text-xs" style="color:#8C6B7D;">Default Light (30m) tasks + natural Siri voice parsing</p>
+            </div>
+            <button onclick="addHardDeadlineDemo()" class="px-2.5 py-1.5 rounded-full text-[11px] font-bold"
+                    style="background:#FAD6E5; color:#B85780;">+ Hard Deadline</button>
+          </div>
+
+          <!-- Natural Siri Phrase Simulator ("Cozy") -->
+          <div class="p-3.5 rounded-3xl border space-y-2" style="background:rgba(255,255,255,0.94); border-color:#F5CCDE;">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold" style="color:#B85780;">🎙️ Siri Voice (“Cozy”)</span>
+              <span id="siriModeTag" class="text-[10px] px-2 py-0.5 rounded-full font-bold" style="background:#FCE3ED; color:#B85780;">Light · 30m Default</span>
+            </div>
+            <div class="flex gap-1.5">
+              <input id="siriPhraseInput" type="text"
+                     value="Hey Siri, add a Cozy task to take out the trash."
+                     class="flex-1 px-2.5 py-1.5 rounded-xl border text-[11px] font-medium outline-none"
+                     style="background:#FFF7FA; border-color:#F5CCDE; color:#4D3340;" />
+              <button onclick="runCustomSiriPhrase()"
+                      class="px-3 py-1.5 rounded-xl text-[11px] font-bold text-white shrink-0"
+                      style="background:linear-gradient(135deg,#F08CB4,#E0709E);">Speak</button>
+            </div>
+            <div class="grid grid-cols-2 gap-1.5">
+              <button onclick="presetSiri('Hey Siri, add a Cozy task to take out the trash.')"
+                      class="text-left px-2.5 py-1.5 rounded-xl border text-[10px] font-semibold"
+                      style="background:#FFF7FA; border-color:#F5CCDE;">🗣️ “Add a Cozy task to take out the trash”</button>
+              <button onclick="presetSiri('Add a heavy 1-hour task to take out the trash.')"
+                      class="text-left px-2.5 py-1.5 rounded-xl border text-[10px] font-semibold"
+                      style="background:#FFF7FA; border-color:#F5CCDE;">🗣️ “Add a heavy 1-hour task to take out the trash”</button>
+            </div>
+            <div id="siriDialogBox" class="p-2 rounded-xl text-[11px]" style="background:linear-gradient(135deg,#FFE8F2,#F3E8FF); color:#4D3340;">
+              🎙️ Cozy: Added “Take out the trash” (Light, 30m, Once) on Sunday, Nov 15!
+            </div>
+          </div>
+
+          <div class="p-3.5 rounded-3xl border space-y-2.5" style="background: rgba(255,255,255,0.92); border-color:#F5CCDE;">
+            <div id="weekBars" class="grid grid-cols-7 gap-2 items-end h-32 pt-2"></div>
+          </div>
+          <div id="selectedDayPanel" class="p-3.5 rounded-3xl border space-y-2" style="background: rgba(255,255,255,0.92); border-color:#F5CCDE;"></div>
+        </section>
+
+        <!-- TAB 4: SETTINGS (ADD FRIENDLY + GAMIFICATION + CUP & SYNC) -->
+        <section id="tab-settings" class="hidden space-y-3">
+          <div>
+            <h1 id="settingsTitle" class="text-xl font-bold" style="color:#4D3340;">Cozy Settings</h1>
+            <p id="settingsSubtitle" class="text-xs" style="color:#8C6B7D;">ADD Friendly mode, optional gamification, daily cup &amp; calendar sync</p>
+          </div>
+
+          <!-- ADD Friendly Mode & Optional Gamification -->
+          <div class="p-3.5 rounded-3xl border space-y-1.5" style="background:rgba(255,255,255,0.95); border-color:#F5CCDE;">
+            <span id="gamificationCardHeader" class="text-xs font-bold block" style="color:#B85780;">✨ ADD Friendly Mode &amp; Gamification</span>
+
+            <label class="flex items-center justify-between px-3 py-1.5 rounded-2xl border cursor-pointer"
+                   style="background:#FFF7FA; border-color:#F5CCDE;">
+              <div>
+                <div class="text-xs font-semibold" style="color:#4D3340;">ADD Friendly Mode</div>
+                <div class="setting-detail text-[10px]" style="color:#8C6B7D;">Trims text across the entire app &amp; lists only hours in Cup prompt</div>
+              </div>
+              <input id="toggleAddFriendly" type="checkbox" onchange="setAddFriendlyMode(this.checked)" />
+            </label>
+
+            <label class="flex items-center justify-between px-3 py-1.5 rounded-2xl border cursor-pointer"
+                   style="background:#FFF7FA; border-color:#F5CCDE;">
+              <div>
+                <div class="text-xs font-semibold" style="color:#4D3340;">Streaks</div>
+                <div class="setting-detail text-[10px]" style="color:#8C6B7D;">Show current &amp; longest recorded day streaks</div>
+              </div>
+              <input id="toggleStreaks" type="checkbox" checked onchange="setStreaksEnabled(this.checked)" />
+            </label>
+
+            <label class="flex items-center justify-between px-3 py-1.5 rounded-2xl border cursor-pointer"
+                   style="background:#FFF7FA; border-color:#F5CCDE;">
+              <div>
+                <div class="text-xs font-semibold" style="color:#4D3340;">Optional Bonus Tasks</div>
+                <div class="setting-detail text-[10px]" style="color:#8C6B7D;">When off, completing daily tasks defaults to a Gold day</div>
+              </div>
+              <input id="toggleBonusTasks" type="checkbox" checked onchange="setBonusTasksEnabled(this.checked)" />
+            </label>
+
+            <label class="flex items-center justify-between px-3 py-1.5 rounded-2xl border cursor-pointer"
+                   style="background:#FFF7FA; border-color:#F5CCDE;">
+              <div>
+                <div class="text-xs font-semibold" style="color:#4D3340;">Day Ranks (Bronze, Silver, Gold)</div>
+                <div class="setting-detail text-[10px]" style="color:#8C6B7D;">Highlight completed days with Bronze, Silver, Gold &amp; PERFECT</div>
+              </div>
+              <input id="toggleDayRanks" type="checkbox" checked onchange="setDayRanksEnabled(this.checked)" />
+            </label>
+
+            <label class="flex items-center justify-between px-3 py-1.5 rounded-2xl border cursor-pointer"
+                   style="background:#FFF7FA; border-color:#F5CCDE;">
+              <div>
+                <div class="text-xs font-semibold" style="color:#4D3340;">Confetti</div>
+                <div class="setting-detail text-[10px]" style="color:#8C6B7D;">Shoot celebratory confetti when checking off tasks</div>
+              </div>
+              <input id="toggleConfetti" type="checkbox" checked onchange="setConfettiEnabled(this.checked)" />
+            </label>
+          </div>
+
+          <!-- Cup Dialogue & Auto-Sync All Changes Card -->
+          <div class="p-3.5 rounded-3xl border space-y-1.5" style="background:rgba(255,255,255,0.94); border-color:#F5CCDE;">
+            <div class="flex items-center justify-between">
+              <span id="cupSyncCardHeader" class="text-xs font-bold" style="color:#B85780;">⚙️ Cup &amp; Calendar Auto-Sync</span>
+              <button onclick="openCupModal()" class="px-2.5 py-0.5 rounded-full text-[10px] font-bold"
+                      style="background:#FCE3ED; color:#B85780;">Open Cup</button>
+            </div>
+
+            <label class="flex items-center justify-between px-3 py-1.5 rounded-2xl border cursor-pointer"
+                   style="background:#FFF7FA; border-color:#F5CCDE;">
+              <div>
+                <div class="text-xs font-semibold" style="color:#4D3340;">“How full is your cup?” Dialogue</div>
+                <div class="setting-detail text-[10px]" style="color:#8C6B7D;">Prompts at 4 AM for 0–5h; off uses weekday budgets</div>
+              </div>
+              <input id="toggleCupPrompt" type="checkbox" checked onchange="setCupDialogueEnabled(this.checked)" />
+            </label>
+
+            <label class="flex items-center justify-between px-3 py-1.5 rounded-2xl border cursor-pointer"
+                   style="background:#FFF7FA; border-color:#F5CCDE;">
+              <div>
+                <div class="text-xs font-semibold" style="color:#4D3340;">Auto-Sync Calendar Changes</div>
+                <div class="setting-detail text-[10px]" style="color:#8C6B7D;">Syncs new tasks, edits, ✅ check-offs &amp; moves to Google/Apple</div>
+              </div>
+              <input id="toggleAutoSync" type="checkbox" checked onchange="setAutoSyncEnabled(this.checked)" />
+            </label>
+
+            <div class="grid grid-cols-2 gap-2">
+              <label class="flex items-center justify-between px-3 py-1.5 rounded-2xl border cursor-pointer"
+                     style="background:#FFF7FA; border-color:#F5CCDE;">
+                <span class="text-[11px] font-semibold" style="color:#4D3340;">🍎 Apple Cal</span>
+                <input id="toggleAppleCal" type="checkbox" checked onchange="setAppleCalSync(this.checked)" />
+              </label>
+              <label class="flex items-center justify-between px-3 py-1.5 rounded-2xl border cursor-pointer"
+                     style="background:#FFF7FA; border-color:#F5CCDE;">
+                <span class="text-[11px] font-semibold" style="color:#4D3340;">📅 Google Cal</span>
+                <input id="toggleGoogleCal" type="checkbox" checked onchange="setGoogleCalSync(this.checked)" />
+              </label>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Bottom Pastel Tab Bar -->
+      <nav class="absolute bottom-0 inset-x-0 px-3 py-3 flex justify-around border-t backdrop-blur-md"
+           style="background: rgba(255,248,251,0.95); border-color:#F5CCDE;">
+        <button onclick="switchTab('today')" id="nav-today" class="flex flex-col items-center gap-0.5 text-xs font-bold" style="color:#B85780;">
+          <span>☑️</span><span>Today</span>
+        </button>
+        <button onclick="switchTab('calendar')" id="nav-calendar" class="flex flex-col items-center gap-0.5 text-xs font-medium" style="color:#8C6B7D;">
+          <span>📅</span><span>Calendar</span>
+        </button>
+        <button onclick="switchTab('schedule')" id="nav-schedule" class="flex flex-col items-center gap-0.5 text-xs font-medium" style="color:#8C6B7D;">
+          <span>🎙️</span><span>Siri &amp; Plan</span>
+        </button>
+        <button onclick="switchTab('settings')" id="nav-settings" class="flex flex-col items-center gap-0.5 text-xs font-medium" style="color:#8C6B7D;">
+          <span>⚙️</span><span>Settings</span>
+        </button>
+      </nav>
+    </div>
+  </div>
+
+  <script>
+    const WEIGHT_META = {
+      light:  { extra: 0,  emoji: "🪶", label: "Light",         short: "+0m",  bg: "#D8F2E4", fg: "#2E6B52" },
+      normal: { extra: 30, emoji: "🌸", label: "Normal (+30m)", short: "+30m", bg: "#FAD6E5", fg: "#B85780" },
+      heavy:  { extra: 60, emoji: "🏋️‍♀️", label: "Heavy (+1h)",   short: "+1h",  bg: "#FCE0D2", fg: "#99473D" }
+    };
+
+    const CUP_DESC = [
+      "0 · Empty Cup (0 hrs): Rest today — non-deadline tasks move back a day while future calendar days stay predicted.",
+      "1 · Gentle Sip (1 hr / 60m): Room for light essentials & urgent deadlines.",
+      "2 · Soft Pace (2 hrs / 120m): Calm, unhurried cozy checklist.",
+      "3 · Steady Cup (3 hrs / 180m): Balanced space for normal & light tasks.",
+      "4 · Warm & Full (4 hrs / 240m): Comfortable room for heavier tasks too.",
+      "5 · Brimming Cup (5 hrs / 300m): Full 5 hours available today!"
+    ];
+
+    let addFriendlyMode = false;
+    let streaksEnabled = true;
+    let optionalBonusTasksEnabled = true;
+    let dayRanksEnabled = true;
+    let confettiEnabled = true;
+
+    let dailyCupPromptEnabled = true;
+    let hasManualCupToday = true;
+    let todayCupHours = 2;
+    let draftCupHours = 2;
+    let autoSyncAllChanges = true;
+    let syncAppleCal = true;
+    let syncGoogleCal = true;
+
+    let editingTaskId = null;
+    let draftEditWeight = "light";
+    let draftEditDuration = 30;
+
+    let baseHighlightMode = "bronze";
+    let calYear = 2026, calMonth = 10;
+    let selectedCalKey = "2026-11-12";
+    let nextTaskId = 20;
+
+    const historyTiers = {
+      "2025-12-28": "gold", "2025-12-29": "gold", "2025-12-30": "silver",
+      "2026-10-18": "gold", "2026-10-19": "gold", "2026-10-20": "silver", "2026-10-21": "gold", "2026-10-22": "gold", "2026-10-23": "gold",
+      "2026-11-03": "base", "2026-11-06": "gold", "2026-11-07": "silver", "2026-11-08": "base",
+      "2026-11-11": "gold", "2026-11-12": "gold", "2026-11-13": "silver"
+    };
+    const yesterdayStreak = 2;
+    let longestRecorded = 5;
+
+    const days = [
+      { idx: 0, short: "Today", full: "Saturday, Nov 14", budget: 180, busy: 0 },
+      { idx: 1, short: "Sun",   full: "Sunday, Nov 15",   budget: 180, busy: 30 },
+      { idx: 2, short: "Mon",   full: "Monday, Nov 16",   budget: 120, busy: 30 },
+      { idx: 3, short: "Tue",   full: "Tuesday, Nov 17",  budget: 120, busy: 60 },
+      { idx: 4, short: "Wed",   full: "Wednesday, Nov 18",budget: 150, busy: 0 },
+      { idx: 5, short: "Thu",   full: "Thursday, Nov 19", budget: 120, busy: 15 },
+      { idx: 6, short: "Fri",   full: "Friday, Nov 20",   budget: 180, busy: 0 }
+    ];
+
+    let tasks = [
+      { id: 1, emoji: "🌸", title: "Morning stretch & make the bed", duration: 15, weight: "light",  hardDeadlineToday: false, recurrence: "Daily",   dayIdx: 0, done: false, bonusSlot: 0 },
+      { id: 2, emoji: "📄", title: "Submit signed lease renewal",    duration: 20, weight: "light",  hardDeadlineToday: true,  recurrence: "Once",    dayIdx: 0, done: false, bonusSlot: 0 },
+      { id: 3, emoji: "🎀", title: "Organize skincare & vanity tray", duration: 30, weight: "normal", hardDeadlineToday: false, recurrence: "Once",    dayIdx: 0, done: false, bonusSlot: 0 },
+      { id: 4, emoji: "🧺", title: "Fresh pastel sheets & room reset",duration: 45, weight: "heavy",  hardDeadlineToday: false, recurrence: "Weekly",  dayIdx: 1, done: false, bonusSlot: 1 },
+      { id: 5, emoji: "💌", title: "Monthly budget check-in",         duration: 30, weight: "light",  hardDeadlineToday: false, recurrence: "Monthly", dayIdx: 4, done: false, bonusSlot: 2 },
+      { id: 6, emoji: "🕯️", title: "Tidy bookshelf & dust frames",    duration: 30, weight: "light",  hardDeadlineToday: false, recurrence: "Once",    dayIdx: 6, done: false, bonusSlot: 0 }
+    ];
+
+    let selectedDayIdx = 0;
+
+    function fmtDur(m) {
+      const h = Math.floor(m / 60), r = m % 60;
+      return h > 0 && r > 0 ? `${h}h ${r}m` : (h > 0 ? `${h}h` : `${r}m`);
+    }
+
+    function effectiveLoad(t) {
+      return t.duration + WEIGHT_META[t.weight].extra;
+    }
+
+    function isTodayUsingCup() {
+      return dailyCupPromptEnabled || hasManualCupToday;
+    }
+
+    function dayEffectiveCapacity(dayIdx) {
+      if (dayIdx === 0 && isTodayUsingCup()) return todayCupHours * 60;
+      const d = days[dayIdx];
+      return Math.max(0, d.budget - d.busy);
+    }
+
+    function dayRemainingFree(dayIdx, excludeTaskId = null) {
+      const cap = dayEffectiveCapacity(dayIdx);
+      const used = tasks
+        .filter(t => t.id !== excludeTaskId && (t.done && t.bonusSlot > 0 ? 0 : t.dayIdx) === dayIdx)
+        .reduce((s, t) => s + effectiveLoad(t), 0);
+      return cap - used;
+    }
+
+    function computeTodayTier() {
+      const base = tasks.filter(t => t.dayIdx === 0 && t.bonusSlot === 0);
+      if (base.length === 0 || !base.every(t => t.done)) return "none";
+      if (!optionalBonusTasksEnabled) return "gold";
+      const bonusDone = tasks.filter(t => t.bonusSlot > 0 && t.done).length;
+      if (bonusDone >= 2) return "gold";
+      if (bonusDone === 1) return "silver";
+      return "base";
+    }
+
+    function currentStreakValue() {
+      return computeTodayTier() === "gold" ? yesterdayStreak + 1 : yesterdayStreak;
+    }
+
+    function longestStreakValue() {
+      if (streaksEnabled) {
+        longestRecorded = Math.max(longestRecorded, currentStreakValue());
+      }
+      return longestRecorded;
+    }
+
+    function tierStyles(tier) {
+      if (tier === "none") return null;
+      if (!dayRanksEnabled) {
+        return {
+          bg: "linear-gradient(135deg,#FCCDE0,#F49BC0)",
+          border: "#E06B9B",
+          fg: "#6E2846",
+          label: "✓ Complete"
+        };
+      }
+      if (tier === "gold") {
+        return { bg: "linear-gradient(135deg,#FFF0AD,#F7C654)", border: "#D99A22", fg: "#5E4006", label: addFriendlyMode ? "🥇 Gold" : "🥇 Gold · PERFECT" };
+      }
+      if (tier === "silver") {
+        return { bg: "linear-gradient(135deg,#F0F3FA,#CFD8EB)", border: "#9AA6BF", fg: "#3D4963", label: addFriendlyMode ? "🥈 Silver" : "🥈 Silver · Streak Kept" };
+      }
+      if (tier === "base") {
+        return baseHighlightMode === "bronze"
+          ? { bg: "linear-gradient(135deg,#F7D1C8,#E69F90)", border: "#C97868", fg: "#6B362C", label: addFriendlyMode ? "🥉 Bronze" : "🥉 Bronze Complete" }
+          : { bg: "linear-gradient(135deg,#FCCDE0,#F49BC0)", border: "#E06B9B", fg: "#6E2846", label: addFriendlyMode ? "🌸 Complete" : "🌸 Pink Complete" };
+      }
+      return null;
+    }
+
+    function setAddFriendlyMode(enabled) {
+      addFriendlyMode = enabled;
+      document.getElementById("toggleAddFriendly").checked = enabled;
+      if (!document.getElementById("cupModal").classList.contains("hidden")) {
+        renderCupModal();
+      }
+      renderAll();
+    }
+
+    function setStreaksEnabled(enabled) {
+      streaksEnabled = enabled;
+      document.getElementById("toggleStreaks").checked = enabled;
+      renderAll();
+    }
+
+    function setBonusTasksEnabled(enabled) {
+      optionalBonusTasksEnabled = enabled;
+      document.getElementById("toggleBonusTasks").checked = enabled;
+      if (!enabled) {
+        tasks.forEach(t => { if (!t.done && t.bonusSlot > 0) t.bonusSlot = 0; });
+      } else {
+        assignBonusSlotsIfNeeded();
+      }
+      renderAll();
+      showCheer(enabled ? "Optional bonus tasks enabled" : "Optional bonus tasks disabled — completed days now default to Gold 🥇");
+    }
+
+    function setDayRanksEnabled(enabled) {
+      dayRanksEnabled = enabled;
+      document.getElementById("toggleDayRanks").checked = enabled;
+      renderAll();
+    }
+
+    function setConfettiEnabled(enabled) {
+      confettiEnabled = enabled;
+      document.getElementById("toggleConfetti").checked = enabled;
+      renderAll();
+    }
+
+    function setCupDialogueEnabled(enabled) {
+      dailyCupPromptEnabled = enabled;
+      hasManualCupToday = enabled;
+      document.getElementById("toggleCupPrompt").checked = enabled;
+      rebalanceTasks(false);
+    }
+
+    function setAutoSyncEnabled(enabled) {
+      autoSyncAllChanges = enabled;
+      renderAll();
+    }
+
+    function setAppleCalSync(enabled) { syncAppleCal = enabled; renderAll(); }
+    function setGoogleCalSync(enabled) { syncGoogleCal = enabled; renderAll(); }
+
+    function openCupModal() {
+      draftCupHours = todayCupHours;
+      renderCupModal();
+      document.getElementById("cupModal").classList.remove("hidden");
+    }
+
+    function skipCupModal() {
+      document.getElementById("cupModal").classList.add("hidden");
+    }
+
+    function disableCupDialogueFromModal() {
+      document.getElementById("cupModal").classList.add("hidden");
+      setCupDialogueEnabled(false);
+    }
+
+    function selectDraftCup(h) {
+      draftCupHours = h;
+      renderCupModal();
+    }
+
+    function renderCupModal() {
+      const box = document.getElementById("cupModalInner");
+      if (addFriendlyMode) {
+        const rows = [0, 1, 2, 3, 4, 5].map(h => {
+          const sel = h === draftCupHours;
+          return `
+            <button onclick="selectDraftCup(${h})"
+                    class="w-full px-4 py-2.5 rounded-2xl border flex items-center justify-between text-xs font-bold transition"
+                    style="${sel
+                      ? 'background:linear-gradient(135deg,#F08CB4,#E0709E); color:#FFF; border-color:#E0709E;'
+                      : 'background:rgba(255,255,255,0.9); color:#4D3340; border-color:#F5CCDE;'}">
+              <span>${h} ${h === 1 ? 'hour' : 'hours'}</span>
+              ${sel ? '<span>✓</span>' : ''}
+            </button>
+          `;
+        }).join("");
+
+        box.innerHTML = `
+          <div class="flex items-center justify-between">
+            <h2 class="text-base font-extrabold" style="color:#4D3340;">How full is your cup today?</h2>
+            <button onclick="skipCupModal()" class="px-2.5 py-1 rounded-full text-[11px] font-bold"
+                    style="background:#FCE3ED; color:#8C6B7D;">Skip</button>
+          </div>
+          <div class="space-y-1.5">${rows}</div>
+          <button onclick="saveCupModal()"
+                  class="w-full py-2.5 rounded-2xl text-xs font-bold text-white shadow"
+                  style="background: linear-gradient(135deg, #F08CB4, #E0709E);">Save</button>
+          <button onclick="disableCupDialogueFromModal()"
+                  class="w-full py-1.5 rounded-xl text-[11px] font-semibold"
+                  style="color:#8C6B7D;">Don't ask daily</button>
+        `;
+        return;
+      }
+
+      let strip = "";
+      for (let h = 0; h <= 5; h++) {
+        const active = h === draftCupHours;
+        strip += `
+          <button onclick="selectDraftCup(${h})"
+                  class="py-2 rounded-xl text-center font-bold border transition"
+                  style="${active
+                    ? 'background:linear-gradient(135deg,#F08CB4,#E0709E); color:#FFF; border-color:#E0709E;'
+                    : 'background:#FCE3ED; color:#4D3340; border-color:#F5CCDE;'}">
+            <div class="text-sm leading-tight">${h}</div>
+            <div class="text-[9px] opacity-85">${h === 1 ? 'hr' : 'hrs'}</div>
+          </button>
+        `;
+      }
+
+      box.innerHTML = `
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] font-bold px-2 py-0.5 rounded-full" style="background:#FCE3ED; color:#B85780;">4:00 AM Reset</span>
+          <button onclick="skipCupModal()" class="px-2.5 py-1 rounded-full text-[11px] font-bold"
+                  style="background:#FCE3ED; color:#8C6B7D;">Skip Today</button>
+        </div>
+        <div class="text-center space-y-1">
+          <div class="text-3xl">${draftCupHours === 0 ? "🫖" : "🍵"}</div>
+          <h2 class="text-lg font-extrabold" style="color:#4D3340;">How full is your cup today?</h2>
+          <p class="text-[11px]" style="color:#8C6B7D;">Choose 0–5 hours for today · Resets at 4:00 AM local time</p>
+        </div>
+        <div class="grid grid-cols-6 gap-1.5">${strip}</div>
+        <p class="text-xs text-center px-2 py-2 rounded-2xl border"
+           style="background:rgba(255,255,255,0.85); border-color:#F5CCDE; color:#6D4C5D;">${CUP_DESC[draftCupHours]}</p>
+        <button onclick="saveCupModal()"
+                class="w-full py-3 rounded-2xl text-xs font-bold text-white shadow"
+                style="background: linear-gradient(135deg, #F08CB4, #E0709E);">✨ Apply Today's Cup</button>
+        <button onclick="disableCupDialogueFromModal()"
+                class="w-full py-2 rounded-xl text-[11px] font-semibold"
+                style="color:#8C6B7D; background:rgba(252,227,237,0.55);">🔕 Disable “How full is your cup?” daily dialogue</button>
+      `;
+    }
+
+    function saveCupModal() {
+      todayCupHours = draftCupHours;
+      hasManualCupToday = true;
+      document.getElementById("cupModal").classList.add("hidden");
+      rebalanceTasks(false);
+    }
+
+    function assignBonusSlotsIfNeeded() {
+      if (!optionalBonusTasksEnabled) return;
+      [1, 2].forEach(slot => {
+        if (!tasks.some(x => x.bonusSlot === slot)) {
+          const cand = tasks.find(x => x.dayIdx > 0 && x.bonusSlot === 0 && !x.done);
+          if (cand) cand.bonusSlot = slot;
+        }
+      });
+    }
+
+    function rebalanceTasks(notify) {
+      const todayCap = dayEffectiveCapacity(0);
+      let usedToday = tasks
+        .filter(t => t.done && (t.bonusSlot > 0 || t.dayIdx === 0))
+        .reduce((s, t) => s + effectiveLoad(t), 0);
+
+      tasks.filter(t => !t.done && t.hardDeadlineToday).forEach(t => {
+        t.dayIdx = 0;
+        t.bonusSlot = 0;
+        usedToday += effectiveLoad(t);
+      });
+
+      const nonDeadlinePending = tasks
+        .filter(t => !t.done && !t.hardDeadlineToday && t.bonusSlot === 0)
+        .sort((a, b) => effectiveLoad(b) - effectiveLoad(a));
+
+      nonDeadlinePending.forEach(t => {
+        const load = effectiveLoad(t);
+        if (t.dayIdx === 0 && todayCap > 0 && (todayCap - usedToday) >= load) {
+          usedToday += load;
+        } else {
+          let bestDay = 1, bestScore = -9999;
+          for (let d = 1; d < days.length; d++) {
+            const score = dayRemainingFree(d, t.id) - load;
+            if (score > bestScore) { bestScore = score; bestDay = d; }
+          }
+          t.dayIdx = bestDay;
+        }
+      });
+
+      renderAll();
+      if (notify) showCheer("✨ Rebalanced tasks across your week!");
+    }
+
+    function toggleTask(id) {
+      const prevTier = computeTodayTier();
+      const t = tasks.find(x => x.id === id);
+      if (!t) return;
+      t.done = !t.done;
+
+      const baseToday = tasks.filter(x => x.dayIdx === 0 && x.bonusSlot === 0);
+      const baseDone = baseToday.length > 0 && baseToday.every(x => x.done);
+      if (baseDone && optionalBonusTasksEnabled) {
+        assignBonusSlotsIfNeeded();
+      }
+
+      const nextTier = computeTodayTier();
+      const streak = currentStreakValue();
+
+      if (t.done) {
+        if (nextTier === "gold" && prevTier !== "gold") {
+          launchConfetti(190, ["#FFD54A", "#FFF0AD", "#F284B0", "#FBBAD3", "#F5B027", "#DFCAFA"]);
+          if (dayRanksEnabled) {
+            showPerfectOverlay(streak);
+          } else {
+            showCheer("All tasks complete!");
+          }
+        } else if (nextTier === "silver" && prevTier !== "silver") {
+          launchConfetti(95, ["#DCE3F2", "#B8C4DE", "#F7A8C4", "#E6DEFA"]);
+          if (dayRanksEnabled) {
+            showCheer(streaksEnabled ? `🥈 Silver Day! Streak preserved (${streak}d)` : "🥈 Silver Day!");
+          }
+        } else if (nextTier === "base" && prevTier === "none") {
+          launchConfetti(85, ["#F284B0", "#E69F90", "#FFCCBA", "#FFE6A8"]);
+          showCheer(optionalBonusTasksEnabled ? "🌸 Daily tasks complete! 2 bonus tasks unlocked ✨" : "🌸 Daily tasks complete!");
+        } else {
+          launchConfetti(55, ["#F284B0", "#FBBAD3", "#FFCCBA", "#DFCAFA", "#C7EDDC"]);
+          showCheer(`Checked off “${t.title}” 🌸`);
+        }
+      }
+      renderAll();
+    }
+
+    function openNewTaskModal() {
+      editingTaskId = null;
+      draftEditWeight = "light";
+      draftEditDuration = 30;
+      document.getElementById("editModalHeading").textContent = "New Task";
+      document.getElementById("editTitleInput").value = "";
+      document.getElementById("editDeadlineToggle").checked = false;
+      renderEditModalPickers();
+      document.getElementById("editTaskModal").classList.remove("hidden");
+    }
+
+    function openEditModal(taskId) {
+      const t = tasks.find(x => x.id === taskId);
+      if (!t) return;
+      editingTaskId = taskId;
+      draftEditWeight = t.weight;
+      draftEditDuration = t.duration;
+      document.getElementById("editModalHeading").textContent = "Edit Task";
+      document.getElementById("editTitleInput").value = t.title;
+      document.getElementById("editDeadlineToggle").checked = Boolean(t.hardDeadlineToday);
+      renderEditModalPickers();
+      document.getElementById("editTaskModal").classList.remove("hidden");
+    }
+
+    function renderEditModalPickers() {
+      document.getElementById("editWeightLabel").textContent = addFriendlyMode ? "Weight" : "Task Weight (Light +0m · Normal +30m · Heavy +1h)";
+      document.getElementById("editDeadlineLabel").textContent = addFriendlyMode ? "Hard Deadline (Today)" : "📌 Hard Deadline (Force Due Today)";
+
+      const durs = [15, 30, 45, 60, 90];
+      document.getElementById("editDurationButtons").innerHTML = durs.map(m => {
+        const sel = draftEditDuration === m;
+        return `
+          <button type="button" onclick="draftEditDuration=${m}; renderEditModalPickers();"
+                  class="py-1.5 rounded-xl text-[11px] font-bold border transition"
+                  style="${sel ? 'background:linear-gradient(135deg,#F08CB4,#E0709E); color:#FFF; border-color:#E0709E;' : 'background:#FFF; color:#4D3340; border-color:#F5CCDE;'}">
+            ${fmtDur(m)}
+          </button>
+        `;
+      }).join("");
+
+      document.getElementById("editWeightButtons").innerHTML = ["light", "normal", "heavy"].map(w => {
+        const wm = WEIGHT_META[w];
+        const sel = draftEditWeight === w;
+        return `
+          <button type="button" onclick="draftEditWeight='${w}'; renderEditModalPickers();"
+                  class="py-2 px-2 rounded-xl text-center font-bold text-[11px] transition"
+                  style="${sel ? 'background:linear-gradient(135deg,#F08CB4,#E0709E); color:#FFF;' : `background:${wm.bg}; color:${wm.fg};`}">
+            <div>${addFriendlyMode ? '' : wm.emoji + ' '}${w[0].toUpperCase() + w.slice(1)}</div>
+            <div class="text-[10px] opacity-90">${wm.short}</div>
+          </button>
+        `;
+      }).join("");
+    }
+
+    function closeEditModal() {
+      editingTaskId = null;
+      document.getElementById("editTaskModal").classList.add("hidden");
+    }
+
+    function saveEditModal() {
+      const titleVal = document.getElementById("editTitleInput").value.trim() || "Take out the trash";
+      const hardDL = document.getElementById("editDeadlineToggle").checked;
+      if (editingTaskId === null) {
+        tasks.push({
+          id: nextTaskId++,
+          emoji: "✅",
+          title: titleVal,
+          duration: draftEditDuration,
+          weight: draftEditWeight,
+          hardDeadlineToday: hardDL,
+          recurrence: "Once",
+          dayIdx: hardDL ? 0 : 1,
+          done: false,
+          bonusSlot: 0
+        });
+      } else {
+        const t = tasks.find(x => x.id === editingTaskId);
+        if (t) {
+          t.title = titleVal;
+          t.duration = draftEditDuration;
+          t.weight = draftEditWeight;
+          t.hardDeadlineToday = hardDL;
+        }
+      }
+      closeEditModal();
+      rebalanceTasks(false);
+    }
+
+    function parseSiriPhrase(raw) {
+      let s = raw.trim().replace(/^(?:hey\s+siri|siri)[,:\s]+/i, "").replace(/[.!]+$/, "").trim();
+      s = s.replace(/\s+(?:in|on|into|with)\s+cozy(?:\s+tasks?)?$/i, "").trim();
+
+      let header = "";
+      let body = s;
+      const taskMatch = s.match(/^(.*?)\btasks?\b(?:\s+(?:in|for|on)\s+cozy)?(?:\s+(?:to|for|called|named)|[:\-])?\s+(.+)$/i);
+      if (taskMatch) {
+        header = taskMatch[1].trim();
+        body = taskMatch[2].trim();
+      } else {
+        body = body.replace(/^to\s+/i, "").trim();
+      }
+
+      let weight = "light";
+      let duration = 30;
+      let recurrence = "Once";
+
+      if (header) {
+        if (/\b(heavy|hard|big)\b/i.test(header)) weight = "heavy";
+        else if (/\b(normal|medium|regular)\b/i.test(header)) weight = "normal";
+        else if (/\b(light|lightweight|easy)\b/i.test(header)) weight = "light";
+
+        if (/hour\s+and\s+a\s+half/i.test(header)) duration = 90;
+        else if (/half[- ]hour/i.test(header)) duration = 30;
+        else {
+          const hm = header.match(/(\d+|one|two|three)\s*[-\s]*(?:hours?|hrs?)/i);
+          const mm = header.match(/(\d+)\s*[-\s]*(?:minutes?|mins?)/i);
+          if (hm || mm) {
+            const wordMap = { one: 1, two: 2, three: 3 };
+            const hVal = hm ? (wordMap[hm[1].toLowerCase()] || parseInt(hm[1], 10) || 0) : 0;
+            const mVal = mm ? (parseInt(mm[1], 10) || 0) : 0;
+            duration = Math.max(5, hVal * 60 + mVal);
+          }
+        }
+
+        if (/\bdaily\b/i.test(header)) recurrence = "Daily";
+        else if (/\bweekly\b/i.test(header)) recurrence = "Weekly";
+        else if (/\bmonthly\b/i.test(header)) recurrence = "Monthly";
+      }
+
+      const cleanTitle = body ? body[0].toUpperCase() + body.slice(1) : "Take out the trash";
+      return { title: cleanTitle, weight, duration, recurrence };
+    }
+
+    function presetSiri(phrase) {
+      document.getElementById("siriPhraseInput").value = phrase;
+      runCustomSiriPhrase();
+    }
+
+    function runCustomSiriPhrase() {
+      const raw = document.getElementById("siriPhraseInput").value;
+      const parsed = parseSiriPhrase(raw);
+      const load = parsed.duration + WEIGHT_META[parsed.weight].extra;
+      let bestDay = 0, bestScore = -9999;
+      for (let d = 0; d < days.length; d++) {
+        if (d === 0 && dayRemainingFree(0) < load) continue;
+        const score = dayRemainingFree(d) - load;
+        if (score > bestScore) { bestScore = score; bestDay = d; }
+      }
+      tasks.push({
+        id: nextTaskId++,
+        emoji: "🗑️",
+        title: parsed.title,
+        duration: parsed.duration,
+        weight: parsed.weight,
+        hardDeadlineToday: false,
+        recurrence: parsed.recurrence,
+        dayIdx: bestDay,
+        done: false,
+        bonusSlot: 0
+      });
+      const dialog = addFriendlyMode
+        ? `🎙️ Added “${parsed.title}” (${fmtDur(parsed.duration)}, ${parsed.weight}) → ${days[bestDay].short}.`
+        : `🎙️ Cozy: Added “${parsed.title}” (${WEIGHT_META[parsed.weight].label}, ${fmtDur(parsed.duration)}, ${parsed.recurrence}) on ${days[bestDay].full}!`;
+      document.getElementById("siriDialogBox").textContent = dialog;
+      renderAll();
+    }
+
+    function addHardDeadlineDemo() {
+      tasks.push({
+        id: nextTaskId++,
+        emoji: "🚨",
+        title: "Urgent pharmacy pickup",
+        duration: 30,
+        weight: "light",
+        hardDeadlineToday: true,
+        recurrence: "Once",
+        dayIdx: 0,
+        done: false,
+        bonusSlot: 0
+      });
+      rebalanceTasks(false);
+      switchTab("today");
+    }
+
+    function swapBonusSlot(slot, newTaskId) {
+      const id = parseInt(newTaskId, 10);
+      tasks.forEach(t => { if (t.bonusSlot === slot && !t.done) t.bonusSlot = 0; });
+      const chosen = tasks.find(t => t.id === id);
+      if (chosen) chosen.bonusSlot = slot;
+      renderAll();
+    }
+
+    function renderToday() {
+      const qBtn = document.getElementById("quickAddFriendlyBtn");
+      qBtn.textContent = addFriendlyMode ? "ADD Friendly: ON" : "ADD Friendly: OFF";
+      qBtn.style.cssText = addFriendlyMode
+        ? "background:linear-gradient(135deg,#F08CB4,#E0709E); color:#FFF; border-color:#E0709E;"
+        : "background:#FCE3ED; color:#B85780; border-color:#F5CCDE;";
+
+      document.getElementById("todayGreeting").textContent = addFriendlyMode ? "Today" : "Good morning 🌸";
+      document.getElementById("todayDateSub").classList.toggle("hidden", addFriendlyMode);
+      document.getElementById("headerBalanceBtn").textContent = addFriendlyMode ? "Balance" : "✨ Balance";
+
+      const cupBtn = document.getElementById("headerCupBtn");
+      if (isTodayUsingCup()) {
+        cupBtn.classList.remove("hidden");
+        cupBtn.textContent = addFriendlyMode ? `${todayCupHours}h` : `${todayCupHours === 0 ? '🫖' : '🍵'} Cup ${todayCupHours}h`;
+      } else {
+        cupBtn.classList.add("hidden");
+      }
+
+      const baseList = tasks
+        .filter(t => t.dayIdx === 0 && t.bonusSlot === 0)
+        .sort((a, b) => Number(a.done) - Number(b.done) || Number(b.hardDeadlineToday) - Number(a.hardDeadlineToday));
+      const doneCount = baseList.filter(t => t.done).length;
+      const total = baseList.length;
+      const pct = total > 0 ? doneCount / total : 0;
+      document.getElementById("progressArc").style.strokeDashoffset = String(163.36 * (1 - pct));
+
+      const tier = computeTodayTier();
+      const streak = currentStreakValue();
+      const best = longestStreakValue();
+
+      const streakPill = document.getElementById("headerStreakPill");
+      streakPill.classList.toggle("hidden", !streaksEnabled);
+      streakPill.textContent = addFriendlyMode ? `🔥 ${streak}d` : `🔥 Streak ${streak}d`;
+
+      const badge = document.getElementById("todayTierBadge");
+      const st = tierStyles(tier);
+      if (st && dayRanksEnabled) {
+        badge.classList.remove("hidden");
+        badge.textContent = st.label;
+        badge.style.background = st.bg;
+        badge.style.borderColor = st.border;
+        badge.style.color = st.fg;
+        document.getElementById("progressRatio").textContent = tier === "gold" ? "🥇" : (tier === "silver" ? "🥈" : "🥉");
+      } else {
+        badge.classList.add("hidden");
+        document.getElementById("progressRatio").textContent = `${doneCount}/${total}`;
+      }
+
+      if (addFriendlyMode) {
+        document.getElementById("progressHeadline").textContent = `${doneCount}/${total} done`;
+        const remClock = baseList.filter(t => !t.done).reduce((s, t) => s + t.duration, 0);
+        document.getElementById("progressSub").textContent = remClock > 0 ? `${fmtDur(remClock)} left` : "Done";
+      } else {
+        document.getElementById("progressHeadline").textContent =
+          (dayRanksEnabled && tier === "gold") ? "PERFECT Gold Day! 🥇" :
+          (dayRanksEnabled && tier === "silver") ? "Silver Day Achieved! 🥈" :
+          tier !== "none" ? "Daily Checklist Complete! 🌸" :
+          "Today's Cozy Checklist 🌸";
+
+        const remClock = baseList.filter(t => !t.done).reduce((s, t) => s + t.duration, 0);
+        const cupRem = Math.max(0, dayRemainingFree(0));
+        document.getElementById("progressSub").textContent =
+          remClock > 0
+            ? `${fmtDur(remClock)} left · ${fmtDur(cupRem)} free ${isTodayUsingCup() ? `in ${todayCupHours}h cup` : 'today'}`
+            : (streaksEnabled ? `Current streak: ${streak}d · Longest: ${best}d` : "All daily tasks completed!");
+      }
+
+      if (baseList.length === 0) {
+        document.getElementById("todayCards").innerHTML = `
+          <div class="p-5 rounded-3xl border text-center space-y-1" style="background:rgba(255,255,255,0.92); border-color:#F5CCDE;">
+            <div class="text-sm font-bold" style="color:#4D3340;">${addFriendlyMode ? "0 tasks today" : "Your cup is resting at 0 hours today 🫖"}</div>
+            ${addFriendlyMode ? "" : '<p class="text-xs" style="color:#8C6B7D;">Non-deadline tasks moved back a day 🌸</p>'}
+          </div>
+        `;
+      } else {
+        document.getElementById("todayCards").innerHTML = baseList.map(t => {
+          const wm = WEIGHT_META[t.weight];
+          const showWeightPill = !addFriendlyMode || t.weight !== "light";
+          const showRecPill = !addFriendlyMode && t.recurrence !== "Once";
+          return `
+            <div onclick="toggleTask(${t.id})"
+                 class="p-3.5 rounded-2xl border flex items-center gap-3 cursor-pointer transition-all active:scale-[0.985]"
+                 style="background:${t.done ? 'rgba(253,240,245,0.82)' : 'rgba(255,255,255,0.95)'}; border-color:#F5CCDE;">
+              <div class="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+                   style="background:${t.done ? 'linear-gradient(135deg,#F08CB4,#E0709E)' : '#FCE3ED'}; border:2px solid #E87AA6;">
+                ${t.done ? '<span class="text-white text-xs font-bold">✓</span>' : ''}
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5">
+                  ${addFriendlyMode ? '' : `<span>${t.emoji}</span>`}
+                  <span class="text-sm font-semibold truncate ${t.done ? 'line-through opacity-55' : ''}">${t.title}</span>
+                </div>
+                <div class="flex items-center gap-1.5 mt-1 flex-wrap">
+                  <span class="px-2 py-0.5 rounded-full text-[11px] font-medium" style="background:#FCE3ED; color:#B85780;">${fmtDur(t.duration)}</span>
+                  ${showWeightPill ? `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold" style="background:${wm.bg}; color:${wm.fg};">${addFriendlyMode ? wLabelShort(t.weight) : wm.emoji + ' ' + wm.label}</span>` : ''}
+                  ${showRecPill ? `<span class="px-2 py-0.5 rounded-full text-[11px] font-medium" style="background:#E8DCFA; color:#6B5299;">${t.recurrence}</span>` : ''}
+                  ${t.hardDeadlineToday ? `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold text-white" style="background:linear-gradient(135deg,#F08CB4,#E0709E);">${addFriendlyMode ? 'Due Today' : '🚨 Hard Deadline'}</span>` : ''}
+                </div>
+              </div>
+              <button onclick="event.stopPropagation(); openEditModal(${t.id})"
+                      title="Edit Task"
+                      class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-xs transition hover:opacity-80"
+                      style="background:#FCE3ED; color:#B85780;">✎</button>
+            </div>
+          `;
+        }).join("");
+      }
+
+      const bonusSec = document.getElementById("bonusSection");
+      if (optionalBonusTasksEnabled && doneCount === total && total > 0) {
+        bonusSec.classList.remove("hidden");
+        document.getElementById("bonusTitle").textContent = addFriendlyMode ? "Bonus Tasks" : "✨ Optional Bonus Tasks (Next 7 Days)";
+        document.getElementById("bonusHintRight").classList.toggle("hidden", !dayRanksEnabled || addFriendlyMode);
+        document.getElementById("bonusSubtitle").classList.toggle("hidden", addFriendlyMode || (!dayRanksEnabled && !streaksEnabled));
+
+        document.getElementById("bonusCards").innerHTML = [1, 2].map(slot => {
+          const cur = tasks.find(t => t.bonusSlot === slot);
+          const options = tasks.filter(t => t.dayIdx > 0 && (t.bonusSlot === 0 || t.bonusSlot === slot));
+          if (!cur) return "";
+          return `
+            <div class="p-3 rounded-2xl border flex items-center gap-3"
+                 style="background:${cur.done ? 'rgba(255,251,235,0.9)' : '#FFFFFF'}; border-color:#F5CCDE;">
+              <button onclick="toggleTask(${cur.id})"
+                      class="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+                      style="background:${cur.done ? '#F7C654' : '#FCE3ED'}; border:2px solid #E87AA6;">
+                ${cur.done ? '<span class="text-xs font-bold">✓</span>' : ''}
+              </button>
+              <div class="flex-1 min-w-0" onclick="toggleTask(${cur.id})">
+                <div class="text-xs font-bold truncate ${cur.done ? 'line-through opacity-60' : ''}">${addFriendlyMode ? '' : cur.emoji + ' '}${cur.title}</div>
+                <div class="text-[11px]" style="color:#8C6B7D;">${days[cur.dayIdx].short} · ${fmtDur(cur.duration)}</div>
+              </div>
+              ${!cur.done ? `
+                <select onchange="swapBonusSlot(${slot}, this.value)"
+                        class="rounded-full px-2 py-1 text-[10px] font-bold border outline-none"
+                        style="background:#FAD6E5; border-color:#F5CCDE; color:#B85780; max-width:84px;">
+                  ${options.map(o => `<option value="${o.id}" ${o.id === cur.id ? 'selected' : ''}>${o.title.slice(0, 12)}..</option>`).join("")}
+                </select>
+              ` : ''}
+            </div>
+          `;
+        }).join("");
+      } else {
+        bonusSec.classList.add("hidden");
+      }
+    }
+
+    function wLabelShort(w) {
+      return w === "heavy" ? "Heavy +1h" : (w === "normal" ? "Normal +30m" : "Light");
+    }
+
+    function getTierForDateKey(key) {
+      if (key === "2026-11-14") return computeTodayTier();
+      const raw = historyTiers[key] || "none";
+      if (!optionalBonusTasksEnabled && raw !== "none") return "gold";
+      return raw;
+    }
+
+    function shiftCalMonth(delta) {
+      calMonth += delta;
+      if (calMonth < 0) { calMonth = 11; calYear--; }
+      if (calMonth > 11) { calMonth = 0; calYear++; }
+      renderCalendar();
+    }
+    function shiftCalYear(delta) { calYear += delta; renderCalendar(); }
+    function jumpTodayCal() { calYear = 2026; calMonth = 10; selectedCalKey = "2026-11-14"; renderCalendar(); }
+    function setBaseColor(mode) { baseHighlightMode = mode; renderAll(); }
+
+    function renderCalendar() {
+      const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+      document.getElementById("calHeaderTitle").textContent = addFriendlyMode ? "Calendar" : "Cozy Calendar";
+      document.getElementById("calHeaderSub").classList.toggle("hidden", addFriendlyMode);
+      document.getElementById("calStreakCard").classList.toggle("hidden", !streaksEnabled);
+      document.getElementById("calRankLegend").classList.toggle("hidden", !dayRanksEnabled);
+      document.getElementById("legendSilverWrap").classList.toggle("hidden", !optionalBonusTasksEnabled);
+      document.getElementById("calBaseColorRow").classList.toggle("hidden", !optionalBonusTasksEnabled || addFriendlyMode);
+
+      document.getElementById("calMonthTitle").textContent = `${monthNames[calMonth]} ${calYear}`;
+      document.getElementById("calCurrentStreak").textContent = `${currentStreakValue()} days`;
+      document.getElementById("calLongestStreak").textContent = `${longestStreakValue()} days`;
+
+      if (dayRanksEnabled) {
+        const baseSt = tierStyles("base");
+        const dot = document.getElementById("legendBaseDot");
+        dot.style.background = baseSt.bg;
+        dot.style.borderColor = baseSt.border;
+      }
+
+      const firstWeekday = new Date(calYear, calMonth, 1).getDay();
+      const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+
+      let cells = "";
+      for (let i = 0; i < firstWeekday; i++) cells += `<div></div>`;
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const key = `${calYear}-${String(calMonth + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+        const tier = getTierForDateKey(key);
+        const st = tierStyles(tier);
+        const isSelected = key === selectedCalKey;
+        const isToday = key === "2026-11-14";
+
+        const bg = st ? st.bg : (isToday ? "#FCE3ED" : "rgba(255,255,255,0.65)");
+        const border = isSelected ? "#B85780" : (st ? st.border : (isToday ? "#E87AA6" : "rgba(245,204,222,0.5)"));
+        const fg = st ? st.fg : "#4D3340";
+
+        cells += `
+          <button onclick="selectedCalKey='${key}'; renderCalendar();"
+                  class="h-10 rounded-xl flex flex-col items-center justify-center text-xs font-bold transition"
+                  style="background:${bg}; border:${isSelected ? '2px' : '1px'} solid ${border}; color:${fg};">
+            <span>${d}</span>
+            ${dayRanksEnabled && tier === "gold" ? '<span class="text-[8px] leading-none">✨</span>' : ''}
+          </button>
+        `;
+      }
+      document.getElementById("calGrid").innerHTML = cells;
+
+      const selTier = getTierForDateKey(selectedCalKey);
+      const selSt = tierStyles(selTier);
+      document.getElementById("calDayDetail").innerHTML = `
+        <div class="flex items-center justify-between">
+          <span class="font-bold" style="color:#4D3340;">${selectedCalKey}</span>
+          ${selSt ? `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold border" style="background:${selSt.bg}; border-color:${selSt.border}; color:${selSt.fg};">${selSt.label}</span>` : `<span style="color:#8C6B7D;">Today · In Progress</span>`}
+        </div>
+      `;
+    }
+
+    function renderSchedule() {
+      document.getElementById("schedHeaderTitle").textContent = addFriendlyMode ? "Schedule" : "Schedule & Siri";
+      document.getElementById("schedHeaderSub").classList.toggle("hidden", addFriendlyMode);
+
+      const maxVal = 300;
+      document.getElementById("weekBars").innerHTML = days.map(d => {
+        const cap = dayEffectiveCapacity(d.idx);
+        const used = tasks.filter(t => (t.done && t.bonusSlot > 0 ? 0 : t.dayIdx) === d.idx).reduce((s, t) => s + effectiveLoad(t), 0);
+        const free = Math.max(0, cap - used);
+        const capH = Math.max(12, Math.round((cap / maxVal) * 84));
+        const usedH = cap > 0 ? Math.min(capH, Math.round((used / maxVal) * 84)) : 0;
+        const active = d.idx === selectedDayIdx;
+
+        return `
+          <button onclick="selectedDayIdx=${d.idx}; renderSchedule();" class="flex flex-col items-center gap-1">
+            <span class="text-[10px] font-semibold" style="color:#8C6B7D;">${d.idx === 0 ? `${todayCupHours}h` : fmtDur(free)}</span>
+            <div class="w-7 h-20 rounded-lg relative flex items-end overflow-hidden" style="background:#FCE3ED;">
+              <div class="w-full rounded-lg relative flex items-end" style="height:${capH}px; background:#F8CDE0;">
+                <div class="w-full rounded-lg transition-all" style="height:${usedH}px; background:linear-gradient(180deg,#F08CB4,#E0709E);"></div>
+              </div>
+            </div>
+            <span class="text-xs font-bold px-1.5 py-0.5 rounded-full"
+                  style="background:${active ? '#E87AA6' : 'transparent'}; color:${active ? '#FFFFFF' : '#4D3340'};">${d.short}</span>
+          </button>
+        `;
+      }).join("");
+
+      const sel = days[selectedDayIdx];
+      const dayTasks = tasks.filter(t => (t.done && t.bonusSlot > 0 ? 0 : t.dayIdx) === sel.idx);
+      const cap = dayEffectiveCapacity(sel.idx);
+      const used = dayTasks.reduce((s, t) => s + effectiveLoad(t), 0);
+      document.getElementById("selectedDayPanel").innerHTML = `
+        <div class="flex items-center justify-between">
+          <p class="text-sm font-bold" style="color:#4D3340;">${sel.full}</p>
+          <span class="text-[11px] font-semibold" style="color:#B85780;">${fmtDur(used)} / ${fmtDur(cap)}</span>
+        </div>
+        <div class="space-y-1.5 pt-1">
+          ${dayTasks.map(t => {
+            const wm = WEIGHT_META[t.weight];
+            return `
+              <div onclick="openEditModal(${t.id})" class="px-3 py-2 rounded-xl flex items-center justify-between text-xs gap-2 cursor-pointer" style="background:#FFF7FA;">
+                <span class="font-semibold truncate">${t.done ? '✅ ' : ''}${addFriendlyMode ? '' : t.emoji + ' '}${t.title}</span>
+                <span class="shrink-0 font-semibold" style="color:${wm.fg};">${fmtDur(t.duration)} · ${wLabelShort(t.weight)}</span>
+              </div>
+            `;
+          }).join("") || `<p class="text-xs py-1" style="color:#8C6B7D;">0 tasks</p>`}
+        </div>
+      `;
+    }
+
+    function renderSettings() {
+      document.getElementById("settingsTitle").textContent = addFriendlyMode ? "Settings" : "Cozy Settings";
+      document.getElementById("settingsSubtitle").classList.toggle("hidden", addFriendlyMode);
+      document.querySelectorAll(".setting-detail").forEach(el => {
+        el.classList.toggle("hidden", addFriendlyMode);
+      });
+    }
+
+    function switchTab(tab) {
+      ["today", "calendar", "schedule", "settings"].forEach(t => {
+        document.getElementById(`tab-${t}`).classList.toggle("hidden", t !== tab);
+        const nav = document.getElementById(`nav-${t}`);
+        nav.style.color = t === tab ? "#B85780" : "#8C6B7D";
+        nav.style.fontWeight = t === tab ? "700" : "500";
+      });
+      renderAll();
+    }
+
+    let bannerTimer = null, perfectTimer = null;
+    function showCheer(msg) {
+      if (addFriendlyMode) return;
+      const el = document.getElementById("cheerBanner");
+      document.getElementById("cheerText").textContent = msg;
+      el.style.opacity = "1";
+      el.style.transform = "translateY(0)";
+      clearTimeout(bannerTimer);
+      bannerTimer = setTimeout(() => { el.style.opacity = "0"; el.style.transform = "translateY(-12px)"; }, 2800);
+    }
+
+    function showPerfectOverlay(streakDays) {
+      if (!dayRanksEnabled) return;
+      const modal = document.getElementById("perfectModal");
+      const streakPill = document.getElementById("perfectStreakPill");
+      streakPill.classList.toggle("hidden", !streaksEnabled);
+      streakPill.textContent = `Streak Days ${streakDays}`;
+      modal.style.opacity = "1";
+      modal.style.transform = "scale(1)";
+      clearTimeout(perfectTimer);
+      perfectTimer = setTimeout(() => {
+        modal.style.opacity = "0";
+        modal.style.transform = "scale(0.75)";
+      }, 3100);
+    }
+
+    const canvas = document.getElementById("confettiCanvas");
+    const ctx = canvas.getContext("2d");
+    let particles = [], animId = null;
+
+    function launchConfetti(count, palette) {
+      if (!confettiEnabled) return;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * window.devicePixelRatio;
+      canvas.height = rect.height * window.devicePixelRatio;
+      ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+      const shapes = ["heart", "petal", "ribbon"];
+
+      for (let i = 0; i < count; i++) {
+        const angle = -Math.PI * (0.14 + Math.random() * 0.72);
+        const speed = 5.5 + Math.random() * 8.5;
+        particles.push({
+          x: rect.width * (0.1 + Math.random() * 0.8),
+          y: rect.height * (0.42 + Math.random() * 0.22),
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          size: 7 + Math.random() * 7,
+          color: palette[Math.floor(Math.random() * palette.length)],
+          shape: shapes[Math.floor(Math.random() * shapes.length)],
+          rot: Math.random() * Math.PI * 2,
+          vrot: (Math.random() - 0.5) * 0.22,
+          flip: Math.random() * Math.PI,
+          life: 0,
+          maxLife: 85 + Math.random() * 45
+        });
+      }
+      if (!animId) tickConfetti();
+    }
+
+    function tickConfetti() {
+      const rect = canvas.getBoundingClientRect();
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      particles = particles.filter(p => p.life < p.maxLife);
+      for (const p of particles) {
+        p.life++;
+        p.x += p.vx + Math.sin(p.life * 0.12) * 0.6;
+        p.y += p.vy;
+        p.vy += 0.22;
+        p.vx *= 0.986;
+        p.rot += p.vrot;
+        p.flip += 0.18;
+        ctx.save();
+        ctx.globalAlpha = p.life > p.maxLife * 0.72 ? (1 - (p.life - p.maxLife * 0.72) / (p.maxLife * 0.28)) : 1;
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.scale(Math.max(0.25, Math.abs(Math.cos(p.flip))), 1);
+        ctx.fillStyle = p.color;
+        const s = p.size;
+        ctx.beginPath();
+        if (p.shape === "heart") {
+          ctx.moveTo(0, s * 0.35);
+          ctx.bezierCurveTo(-s * 0.55, -s * 0.1, -s * 0.55, -s * 0.55, 0, -s * 0.2);
+          ctx.bezierCurveTo(s * 0.55, -s * 0.55, s * 0.55, -s * 0.1, 0, s * 0.35);
+        } else if (p.shape === "petal") {
+          ctx.ellipse(0, 0, s * 0.42, s * 0.7, 0, 0, Math.PI * 2);
+        } else {
+          ctx.roundRect(-s * 0.5, -s * 0.28, s, s * 0.56, 2);
+        }
+        ctx.fill();
+        ctx.restore();
+      }
+      if (particles.length > 0) animId = requestAnimationFrame(tickConfetti);
+      else animId = null;
+    }
+
+    function renderAll() {
+      renderToday();
+      renderCalendar();
+      renderSchedule();
+      renderSettings();
+    }
+
+    rebalanceTasks(false);
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("screenshot") === "1") {
+      document.body.classList.add("screenshot-mode");
+    }
+    const viewParam = params.get("view");
+    if (viewParam === "today") {
+      tasks[0].done = true;
+      renderAll();
+    } else if (viewParam === "cup") {
+      openCupModal();
+    } else if (viewParam === "calendar") {
+      switchTab("calendar");
+    } else if (viewParam === "schedule") {
+      switchTab("schedule");
+    } else if (viewParam === "settings") {
+      switchTab("settings");
+    } else if (dailyCupPromptEnabled) {
+      openCupModal();
+    }
+  </script>
+</body>
+</html>
