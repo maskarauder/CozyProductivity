@@ -8,11 +8,20 @@ enum CozySyncChannel: String, Codable, Sendable {
     case apple = "apple"
 }
 
+/// A committed removal in EventKit's identifier namespace. Neither the EventKit identifiers nor
+/// the occurrence UUID prove that a separately tracked REST event on another calendar was removed.
+struct EKConfirmedOAuthRemoval: Hashable {
+    let occurrenceID: UUID?
+    let eventIdentifier: String?
+    let calendarIdentifier: String
+}
+
 struct EKSyncOutcome {
     let upserted: Int
     let removed: Int
     let failed: Int
     let deferred: Int
+    let confirmedOAuthRemovals: Set<EKConfirmedOAuthRemoval>
     let calendarTitle: String?
     let errorMessage: String?
 
@@ -21,6 +30,7 @@ struct EKSyncOutcome {
         removed: Int,
         failed: Int,
         deferred: Int = 0,
+        confirmedOAuthRemovals: Set<EKConfirmedOAuthRemoval> = [],
         calendarTitle: String?,
         errorMessage: String?
     ) {
@@ -28,6 +38,7 @@ struct EKSyncOutcome {
         self.removed = removed
         self.failed = failed
         self.deferred = deferred
+        self.confirmedOAuthRemovals = confirmedOAuthRemovals
         self.calendarTitle = calendarTitle
         self.errorMessage = errorMessage
     }
@@ -523,9 +534,8 @@ final class CalendarFreeTimeService {
                 }
             }
         )
-        if sweepStrandedOAuthEvents && outcome.failed == 0 {
-            preferences.needsGoogleOAuthChannelSweep = false
-        }
+        // This fallback only visits the selected EventKit calendar within the sync window.
+        // Keep the OAuth sweep pending until REST can confirm cleanup of all tracked destinations.
         return outcome
     }
 
@@ -767,6 +777,18 @@ final class CalendarFreeTimeService {
         var removedEventIDs: Set<String> = []
         var placedByDay: [Date: [(Date, Date)]] = busyIntervalsByDay
         var stagedMetadataUpdates: [StagedOccurrenceMetadata] = []
+        var stagedOAuthRemovals: Set<EKConfirmedOAuthRemoval> = []
+
+        func recordStagedOAuthRemoval(_ event: BackingEventRecord) {
+            guard Self.recordBelongsToChannel(event, channel: .googleOAuth) else { return }
+            stagedOAuthRemovals.insert(
+                EKConfirmedOAuthRemoval(
+                    occurrenceID: Self.extractCozyOccurrenceID(fromURL: event.url, notes: event.notes),
+                    eventIdentifier: event.resolvedEventIdentifier,
+                    calendarIdentifier: event.calendarIdentifier
+                )
+            )
+        }
 
         func effectiveOccurrenceDay(_ occ: TaskOccurrence) -> Date {
             if occ.isCompleted, let bonus = occ.bonusDay(calendar: calendar) {
@@ -791,7 +813,7 @@ final class CalendarFreeTimeService {
             ? []
             : occurrences
                 .filter { occ in
-                    guard occ.status != .skipped else { return false }
+                    guard occ.status != .skipped && occ.status != .missed else { return false }
                     let day = effectiveOccurrenceDay(occ)
                     return day >= minSyncDay && day <= maxSyncDay
                 }
@@ -816,6 +838,7 @@ final class CalendarFreeTimeService {
             if let staleEvent = backing.event(withIdentifier: pending.eventIdentifier) {
                 do {
                     try backing.remove(staleEvent)
+                    recordStagedOAuthRemoval(staleEvent)
                     // Mark removed ONLY after `backing.remove` succeeds!
                     removedEventIDs.insert(pending.eventIdentifier)
                     drainedPendingItems.insert(pending)
@@ -835,6 +858,7 @@ final class CalendarFreeTimeService {
             if let oldEvent = backing.event(withIdentifier: oldID) {
                 do {
                     try backing.remove(oldEvent)
+                    recordStagedOAuthRemoval(oldEvent)
                     removedEventIDs.insert(oldID)
                     stagedRemovals += 1
                 } catch {
@@ -868,6 +892,7 @@ final class CalendarFreeTimeService {
                     // Duplicate event for the same occurrence on this channel -> remove duplicate
                     do {
                         try backing.remove(event)
+                        recordStagedOAuthRemoval(event)
                         if let eid = event.resolvedEventIdentifier, !eid.isEmpty {
                             removedEventIDs.insert(eid)
                         }
@@ -883,6 +908,7 @@ final class CalendarFreeTimeService {
             } else {
                 do {
                     try backing.remove(event)
+                    recordStagedOAuthRemoval(event)
                     if let eid = event.resolvedEventIdentifier, !eid.isEmpty {
                         removedEventIDs.insert(eid)
                     }
@@ -916,6 +942,7 @@ final class CalendarFreeTimeService {
             if let staleEvent = backing.event(withIdentifier: savedID) {
                 do {
                     try backing.remove(staleEvent)
+                    recordStagedOAuthRemoval(staleEvent)
                     removedEventIDs.insert(savedID)
                     stagedRemovals += 1
                     stagedMetadataUpdates.append(
@@ -1084,6 +1111,7 @@ final class CalendarFreeTimeService {
             removed: stagedRemovals,
             failed: operationFailures,
             deferred: deferredWrites,
+            confirmedOAuthRemovals: stagedOAuthRemovals,
             calendarTitle: targetCalendar.title,
             errorMessage: failureReason
         )

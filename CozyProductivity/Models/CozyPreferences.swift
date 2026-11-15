@@ -201,6 +201,24 @@ final class CozyPreferences {
             || !pendingEKDeletions.isEmpty
     }
 
+    /// Every Settings entry point uses these setters so disabling push always retires its events.
+    func setAppleTaskPushEnabled(_ enabled: Bool) {
+        if !enabled && pushTasksToAppleCalendar {
+            needsAppleChannelSweep = true
+        }
+        pushTasksToAppleCalendar = enabled
+    }
+
+    func setGoogleTaskPushEnabled(_ enabled: Bool) {
+        if !enabled && pushTasksToGoogleCalendar {
+            switch googleSyncMode {
+            case .oauthREST: needsGoogleOAuthChannelSweep = true
+            case .iosGoogleAccount: needsGoogleBridgeChannelSweep = true
+            }
+        }
+        pushTasksToGoogleCalendar = enabled
+    }
+
     /// True whenever Apple Calendar busy sync or Google Calendar busy sync is active.
     var hasAnyCalendarBusySyncEnabled: Bool {
         useCalendarSync || useGoogleCalendarSync

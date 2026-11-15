@@ -106,7 +106,14 @@ enum TaskCategory: String, Codable, CaseIterable, Identifiable {
 enum OccurrenceStatus: String, Codable {
     case pending
     case completed
+    /// An unfinished commitment whose recurrence period ended; retained in achievement totals.
+    case missed
+    /// A deliberately omitted commitment; excluded from achievement totals.
     case skipped
+
+    var isScheduled: Bool {
+        self == .pending || self == .completed
+    }
 }
 
 enum TaskWeight: String, Codable, CaseIterable, Identifiable {

@@ -24,6 +24,54 @@ struct CozySettingsView: View {
         preferences.addFriendlyMode
     }
 
+    // Both the overview and detailed calendar cards share these bindings.
+    private var appleTaskPushBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.pushTasksToAppleCalendar },
+            set: { enabled in
+                Task { @MainActor in
+                    let allowed: Bool
+                    if enabled {
+                        allowed = await CalendarFreeTimeService.shared.requestAccess()
+                    } else {
+                        allowed = false
+                    }
+                    preferences.setAppleTaskPushEnabled(allowed)
+                    await finishTaskPushChange(disabled: !allowed)
+                }
+            }
+        )
+    }
+
+    private var googleTaskPushBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.pushTasksToGoogleCalendar },
+            set: { enabled in
+                Task { @MainActor in
+                    if enabled && preferences.googleSyncMode == .iosGoogleAccount {
+                        guard await CalendarFreeTimeService.shared.requestAccess() else { return }
+                    }
+                    preferences.setGoogleTaskPushEnabled(enabled)
+                    await finishTaskPushChange(disabled: !enabled)
+                }
+            }
+        )
+    }
+
+    @MainActor
+    private func finishTaskPushChange(disabled: Bool) async {
+        try? modelContext.save()
+        // An explicit disable must clean up even when automatic sync is turned off.
+        if disabled && preferences.hasPendingCalendarCleanup {
+            _ = await googleService.pushOccurrenceChangesWithoutRebalance(
+                context: modelContext,
+                preferences: preferences,
+                referenceDate: DateHelpers.logicalToday()
+            )
+        }
+        onScheduleSettingsChanged()
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -310,21 +358,7 @@ struct CozySettingsView: View {
 
             Divider().overlay(CozyTheme.cardBorder)
 
-            Toggle(isOn: Binding(
-                get: { preferences.pushTasksToAppleCalendar },
-                set: { enabled in
-                    Task { @MainActor in
-                        if enabled {
-                            let granted = await CalendarFreeTimeService.shared.requestAccess()
-                            preferences.pushTasksToAppleCalendar = granted
-                        } else {
-                            preferences.pushTasksToAppleCalendar = false
-                        }
-                        try? modelContext.save()
-                        onScheduleSettingsChanged()
-                    }
-                }
-            )) {
+            Toggle(isOn: appleTaskPushBinding) {
                 settingToggleLabel(
                     "Sync Tasks to Apple Calendar",
                     detail: "Pushes and updates scheduled Cozy tasks directly on your iPhone / iCloud Calendar."
@@ -332,19 +366,7 @@ struct CozySettingsView: View {
             }
             .tint(CozyTheme.roseAccent)
 
-            Toggle(isOn: Binding(
-                get: { preferences.pushTasksToGoogleCalendar },
-                set: { enabled in
-                    Task { @MainActor in
-                        if enabled && preferences.googleSyncMode == .iosGoogleAccount {
-                            _ = await CalendarFreeTimeService.shared.requestAccess()
-                        }
-                        preferences.pushTasksToGoogleCalendar = enabled
-                        try? modelContext.save()
-                        onScheduleSettingsChanged()
-                    }
-                }
-            )) {
+            Toggle(isOn: googleTaskPushBinding) {
                 settingToggleLabel(
                     "Sync Tasks to Google Calendar",
                     detail: "Pushes and updates scheduled Cozy tasks on Google Calendar (via OAuth 2.0 or iPhone Account Bridge)."
@@ -666,33 +688,7 @@ struct CozySettingsView: View {
             .tint(CozyTheme.roseAccent)
 
             // Toggle 2: Push & Merge Cozy Tasks to Google Calendar
-            Toggle(isOn: Binding(
-                get: { preferences.pushTasksToGoogleCalendar },
-                set: { enabled in
-                    Task { @MainActor in
-                        if enabled && preferences.googleSyncMode == .iosGoogleAccount {
-                            _ = await CalendarFreeTimeService.shared.requestAccess()
-                        }
-                        if !enabled {
-                            if preferences.googleSyncMode == .oauthREST {
-                                preferences.needsGoogleOAuthChannelSweep = true
-                            } else {
-                                preferences.needsGoogleBridgeChannelSweep = true
-                            }
-                        }
-                        preferences.pushTasksToGoogleCalendar = enabled
-                        try? modelContext.save()
-                        if !enabled && preferences.hasPendingCalendarCleanup {
-                            _ = await googleService.pushOccurrenceChangesWithoutRebalance(
-                                context: modelContext,
-                                preferences: preferences,
-                                referenceDate: DateHelpers.logicalToday()
-                            )
-                        }
-                        onScheduleSettingsChanged()
-                    }
-                }
-            )) {
+            Toggle(isOn: googleTaskPushBinding) {
                 settingToggleLabel(
                     "Push & Merge Scheduled Tasks",
                     detail: "Creates and updates Cozy tasks in open Google Calendar slots—moving them when rebalanced and marking ✅ when completed."
@@ -822,25 +818,17 @@ struct CozySettingsView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(CozyTheme.deepRose)
                     Spacer()
-                    Button("Disconnect") {
+                    Button(googleService.isDisconnecting ? "Disconnecting…" : "Disconnect") {
                         Task { @MainActor in
-                            if preferences.pushTasksToGoogleCalendar {
-                                _ = try? await googleService.pushAndMergeOccurrencesToGoogleAPI(
-                                    occurrences: GoogleCalendarService.fetchOccurrencesForCalendarSync(
-                                        context: modelContext,
-                                        today: DateHelpers.logicalToday()
-                                    ),
-                                    busyIntervalsByDay: [:],
-                                    preferences: preferences,
-                                    today: DateHelpers.logicalToday(),
-                                    allowSlotChangingWrites: false,
-                                    cleanupOnly: true
-                                )
-                            }
-                            googleService.signOut(preferences: preferences)
+                            _ = await googleService.disconnect(
+                                context: modelContext,
+                                preferences: preferences,
+                                referenceDate: DateHelpers.logicalToday()
+                            )
                             try? modelContext.save()
                         }
                     }
+                    .disabled(googleService.isDisconnecting)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(CozyTheme.inkSecondary)
                 }
@@ -960,29 +948,7 @@ struct CozySettingsView: View {
             }
             .tint(CozyTheme.roseAccent)
 
-            Toggle(isOn: Binding(
-                get: { preferences.pushTasksToAppleCalendar },
-                set: { enabled in
-                    Task { @MainActor in
-                        if enabled {
-                            let granted = await CalendarFreeTimeService.shared.requestAccess()
-                            preferences.pushTasksToAppleCalendar = granted
-                        } else {
-                            preferences.needsAppleChannelSweep = true
-                            preferences.pushTasksToAppleCalendar = false
-                        }
-                        try? modelContext.save()
-                        if !enabled && preferences.hasPendingCalendarCleanup {
-                            _ = await googleService.pushOccurrenceChangesWithoutRebalance(
-                                context: modelContext,
-                                preferences: preferences,
-                                referenceDate: DateHelpers.logicalToday()
-                            )
-                        }
-                        onScheduleSettingsChanged()
-                    }
-                }
-            )) {
+            Toggle(isOn: appleTaskPushBinding) {
                 settingToggleLabel(
                     isAddFriendly ? "Push Tasks to Apple Calendar" : "Push & Sync Scheduled Tasks to Apple Calendar",
                     detail: "Creates, updates, and cleans up Cozy tasks on your iPhone Calendar—moving them when rebalanced and marking ✅ when completed."

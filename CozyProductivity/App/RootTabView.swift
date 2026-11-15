@@ -239,8 +239,8 @@ struct RootTabView: View {
                     now: Date()
                 ) {
                     localIntervalSources.append(cachedIntervals.filter { $0.key >= today && $0.key <= horizonEnd })
-                } else if prefs.shouldAutoSyncCalendarsOnChange {
-                    // Defer local rebalance until the async Google busy read succeeds (or reports failure)
+                } else {
+                    // A missing/expired cache is not evidence of an empty calendar.
                     canRunImmediateLocalRebalance = false
                 }
 
@@ -255,16 +255,15 @@ struct RootTabView: View {
                         wakingEndHour: prefs.wakingEndHour
                     )
                     localIntervalSources.append(bridgeIntervals)
-                } else if prefs.shouldAutoSyncCalendarsOnChange {
+                } else {
                     canRunImmediateLocalRebalance = false
                 }
             }
         }
 
         let initialBusyByDay = CalendarFreeTimeService.mergeBusyIntervalsByDay(localIntervalSources)
-        calendarBusyByDay = initialBusyByDay
-
         if canRunImmediateLocalRebalance {
+            calendarBusyByDay = initialBusyByDay
             SmartScheduler.rebalance(
                 context: modelContext,
                 preferences: prefs,
@@ -280,7 +279,7 @@ struct RootTabView: View {
                     preferences: prefs,
                     referenceDate: today
                 )
-                if !report.mergedBusyByDay.isEmpty || !prefs.hasAnyCalendarBusySyncEnabled {
+                if report.busyReadSucceeded {
                     calendarBusyByDay = report.mergedBusyByDay
                 }
             }
@@ -316,7 +315,7 @@ struct RootTabView: View {
                     preferences: prefs,
                     referenceDate: logicalDay
                 )
-                if prefs.hasAnyCalendarBusySyncEnabled && !report.mergedBusyByDay.isEmpty {
+                if report.busyReadSucceeded {
                     calendarBusyByDay = report.mergedBusyByDay
                 }
             }

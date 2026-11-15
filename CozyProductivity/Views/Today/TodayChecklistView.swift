@@ -28,7 +28,7 @@ struct TodayChecklistView: View {
     private var baseTodaysOccurrences: [TaskOccurrence] {
         occurrences
             .filter {
-                $0.status != .skipped
+                $0.status.isScheduled
                     && $0.bonusDay() == nil
                     && DateHelpers.isSameDay($0.scheduledDay(), today)
             }
@@ -62,7 +62,7 @@ struct TodayChecklistView: View {
 
     private func bonusOccurrence(forSlot slot: Int) -> TaskOccurrence? {
         occurrences.first {
-            $0.status != .skipped
+            $0.status.isScheduled
                 && $0.bonusSlot == slot
                 && ($0.bonusDay().map { DateHelpers.isSameDay($0, today) } ?? false)
         }

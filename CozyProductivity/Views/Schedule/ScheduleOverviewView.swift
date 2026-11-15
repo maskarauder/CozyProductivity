@@ -56,7 +56,7 @@ struct ScheduleOverviewView: View {
         let targetDate = activeSummary.date
         let dayOccurrences = occurrences
             .filter { occ in
-                guard occ.status != .skipped else { return false }
+                guard occ.status.isScheduled else { return false }
                 let effectiveDate = occ.isCompleted
                     ? (occ.bonusDay() ?? occ.scheduledDay())
                     : occ.scheduledDay()

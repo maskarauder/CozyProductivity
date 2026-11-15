@@ -13,6 +13,40 @@ private final class ForegroundNotificationDelegate: NSObject, UNUserNotification
 }
 
 @MainActor
+protocol CozyNotificationCenter {
+    func authorizationStatus() async -> UNAuthorizationStatus
+    func requestAuthorization() async throws -> Bool
+    func pendingNotificationRequests() async -> [UNNotificationRequest]
+    func removePendingNotificationRequests(withIdentifiers identifiers: [String])
+    func add(_ request: UNNotificationRequest) async throws
+}
+
+@MainActor
+private final class SystemCozyNotificationCenter: CozyNotificationCenter {
+    private let center = UNUserNotificationCenter.current()
+
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        await center.notificationSettings().authorizationStatus
+    }
+
+    func requestAuthorization() async throws -> Bool {
+        try await center.requestAuthorization(options: [.alert, .sound, .badge])
+    }
+
+    func pendingNotificationRequests() async -> [UNNotificationRequest] {
+        await center.pendingNotificationRequests()
+    }
+
+    func removePendingNotificationRequests(withIdentifiers identifiers: [String]) {
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+
+    func add(_ request: UNNotificationRequest) async throws {
+        try await center.add(request)
+    }
+}
+
+@MainActor
 @Observable
 final class NotificationManager {
     static let shared = NotificationManager()
@@ -21,9 +55,26 @@ final class NotificationManager {
 
     private let identifierPrefix = "cozy.summary."
     private let foregroundDelegate = ForegroundNotificationDelegate()
+    private let notificationCenter: any CozyNotificationCenter
+
+    private struct SummarySyncRequest {
+        let preferences: CozyPreferences
+        let occurrences: [TaskOccurrence]
+        let now: Date
+        let calendar: Calendar
+    }
+
+    @ObservationIgnored private var isRebuildingSummaries = false
+    @ObservationIgnored private var pendingSummarySync: SummarySyncRequest?
+    @ObservationIgnored private var summarySyncWaiters: [CheckedContinuation<Void, Never>] = []
 
     private init() {
+        notificationCenter = SystemCozyNotificationCenter()
         UNUserNotificationCenter.current().delegate = foregroundDelegate
+    }
+
+    init(notificationCenter: any CozyNotificationCenter) {
+        self.notificationCenter = notificationCenter
     }
 
     /// Fetches only the bounded occurrence window needed to build daily, weekly, and monthly notification digests.
@@ -44,9 +95,11 @@ final class NotificationManager {
                 occ.scheduledDate >= lowerBound && occ.scheduledDate <= upperBound
             }
         )
+        let missingBonusDate = Date.distantPast
         let bonusDescriptor = FetchDescriptor<TaskOccurrence>(
             predicate: #Predicate<TaskOccurrence> { occ in
-                occ.bonusForDate != nil
+                (occ.bonusForDate ?? missingBonusDate) >= lowerBound
+                    && (occ.bonusForDate ?? missingBonusDate) <= upperBound
             }
         )
         var mergedByID: [UUID: TaskOccurrence] = [:]
@@ -61,8 +114,7 @@ final class NotificationManager {
     }
 
     func refreshAuthorizationStatus() async {
-        let settings = await UNUserNotificationCenter.current().notificationSettings()
-        authorizationStatus = settings.authorizationStatus
+        authorizationStatus = await notificationCenter.authorizationStatus()
     }
 
     func requestPermissionIfNeeded() async -> Bool {
@@ -71,9 +123,7 @@ final class NotificationManager {
         }
         await refreshAuthorizationStatus()
         if authorizationStatus == .notDetermined {
-            let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(
-                options: [.alert, .sound, .badge]
-            )) ?? false
+            let granted = (try? await notificationCenter.requestAuthorization()) ?? false
             await refreshAuthorizationStatus()
             return granted
         }
@@ -92,7 +142,47 @@ final class NotificationManager {
         now: Date = Date(),
         calendar: Calendar = DateHelpers.calendar
     ) async {
+        // Only one rebuild may write to the center. A newer request replaces the queued
+        // snapshot, then runs after the in-flight add has finished, removing its stale result.
+        pendingSummarySync = SummarySyncRequest(
+            preferences: preferences,
+            occurrences: occurrences,
+            now: now,
+            calendar: calendar
+        )
+        if isRebuildingSummaries {
+            await withCheckedContinuation { continuation in
+                summarySyncWaiters.append(continuation)
+            }
+            return
+        }
+
+        isRebuildingSummaries = true
+        while let request = pendingSummarySync {
+            pendingSummarySync = nil
+            await rebuildSummaryNotifications(
+                preferences: request.preferences,
+                occurrences: request.occurrences,
+                now: request.now,
+                calendar: request.calendar
+            )
+        }
+        isRebuildingSummaries = false
+        let waiters = summarySyncWaiters
+        summarySyncWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    private func rebuildSummaryNotifications(
+        preferences: CozyPreferences,
+        occurrences: [TaskOccurrence],
+        now: Date,
+        calendar: Calendar
+    ) async {
         await refreshAuthorizationStatus()
+        guard pendingSummarySync == nil else { return }
 
         let anyEnabled = preferences.dailySummaryEnabled
             || preferences.weeklySummaryEnabled
@@ -100,16 +190,17 @@ final class NotificationManager {
 
         if anyEnabled && authorizationStatus == .notDetermined {
             _ = await requestPermissionIfNeeded()
+            guard pendingSummarySync == nil else { return }
         }
 
-        let center = UNUserNotificationCenter.current()
-        let pendingRequests = await center.pendingNotificationRequests()
+        let pendingRequests = await notificationCenter.pendingNotificationRequests()
+        guard pendingSummarySync == nil else { return }
         let cozyIDs = pendingRequests
             .map(\.identifier)
             .filter { $0.hasPrefix(identifierPrefix) }
 
         if !cozyIDs.isEmpty {
-            center.removePendingNotificationRequests(withIdentifiers: cozyIDs)
+            notificationCenter.removePendingNotificationRequests(withIdentifiers: cozyIDs)
         }
 
         guard isAuthorized else { return }
@@ -156,7 +247,8 @@ final class NotificationManager {
                     content: content,
                     trigger: trigger
                 )
-                try? await center.add(req)
+                try? await notificationCenter.add(req)
+                guard pendingSummarySync == nil else { return }
             }
         }
 
@@ -195,7 +287,8 @@ final class NotificationManager {
                     content: content,
                     trigger: trigger
                 )
-                try? await center.add(req)
+                try? await notificationCenter.add(req)
+                guard pendingSummarySync == nil else { return }
             }
         }
 
@@ -234,7 +327,8 @@ final class NotificationManager {
                     content: content,
                     trigger: trigger
                 )
-                try? await center.add(req)
+                try? await notificationCenter.add(req)
+                guard pendingSummarySync == nil else { return }
             }
         }
     }
@@ -257,7 +351,7 @@ final class NotificationManager {
             trigger: trigger
         )
         do {
-            try await UNUserNotificationCenter.current().add(req)
+            try await notificationCenter.add(req)
             return true
         } catch {
             return false

@@ -64,6 +64,7 @@ struct CalendarSyncReport {
     let failedCount: Int
     let deferredCount: Int
     let usedCachedBusySnapshot: Bool
+    let busyReadSucceeded: Bool
     let statusMessage: String
 
     init(
@@ -73,6 +74,7 @@ struct CalendarSyncReport {
         failedCount: Int = 0,
         deferredCount: Int = 0,
         usedCachedBusySnapshot: Bool = false,
+        busyReadSucceeded: Bool = false,
         statusMessage: String
     ) {
         self.mergedBusyByDay = mergedBusyByDay
@@ -81,6 +83,7 @@ struct CalendarSyncReport {
         self.failedCount = failedCount
         self.deferredCount = deferredCount
         self.usedCachedBusySnapshot = usedCachedBusySnapshot
+        self.busyReadSucceeded = busyReadSucceeded
         self.statusMessage = statusMessage
     }
 }
@@ -150,6 +153,8 @@ final class GoogleCalendarService {
     private let freeTimeService: CalendarFreeTimeService
     private let persistTokensToKeychain: Bool
     private let performNotificationSync: Bool
+    private let now: @MainActor () -> Date
+    private var authenticationGeneration = 0
 
     var maxCachedBusySnapshotAgeSeconds: TimeInterval = GoogleCalendarService.defaultMaxCachedBusySnapshotAgeSeconds
 
@@ -163,9 +168,12 @@ final class GoogleCalendarService {
     private var isCoordinatorRunning = false
     private var pendingQueuedRequest: QueuedSyncRequest?
     private var queuedWaiters: [CheckedContinuation<CalendarSyncReport, Never>] = []
+    private var coordinatorIdleWaiters: [CheckedContinuation<Void, Never>] = []
+    private var disconnectWaiters: [CheckedContinuation<CalendarSyncReport, Never>] = []
 
     private(set) var token: GoogleOAuthToken?
     private(set) var isSyncing: Bool = false
+    private(set) var isDisconnecting: Bool = false
     private(set) var lastSyncedAt: Date?
     var lastSyncStatusMessage: String?
 
@@ -176,6 +184,7 @@ final class GoogleCalendarService {
         self.freeTimeService = CalendarFreeTimeService.shared
         self.persistTokensToKeychain = true
         self.performNotificationSync = true
+        self.now = { Date() }
         self.token = KeychainHelper.loadCodable(GoogleOAuthToken.self, account: Self.tokenKeychainAccount)
     }
 
@@ -184,12 +193,14 @@ final class GoogleCalendarService {
         initialToken: GoogleOAuthToken? = nil,
         freeTimeService: CalendarFreeTimeService? = nil,
         persistTokensToKeychain: Bool = false,
-        performNotificationSync: Bool = false
+        performNotificationSync: Bool = false,
+        now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.httpLoader = httpLoader
         self.freeTimeService = freeTimeService ?? CalendarFreeTimeService.shared
         self.persistTokensToKeychain = persistTokensToKeychain
         self.performNotificationSync = performNotificationSync
+        self.now = now
         self.token = initialToken
     }
 
@@ -214,6 +225,9 @@ final class GoogleCalendarService {
     // MARK: - OAuth 2.0 PKCE Sign-In & Sign-Out
 
     func signOut(preferences: CozyPreferences? = nil) {
+        authenticationGeneration += 1
+        activeAuthSession?.cancel()
+        activeAuthSession = nil
         if let preferences {
             preferences.needsGoogleOAuthChannelSweep = true
         }
@@ -224,7 +238,81 @@ final class GoogleCalendarService {
         lastSyncStatusMessage = "Disconnected Google OAuth account."
     }
 
+    /// Retires OAuth only after every coordinated write has finished, so a late POST cannot recreate an event
+    /// after cleanup. New sync requests are deferred while this exclusive operation is running.
+    func disconnect(
+        context: ModelContext,
+        preferences: CozyPreferences,
+        referenceDate: Date = Date(),
+        calendar: Calendar = DateHelpers.calendar
+    ) async -> CalendarSyncReport {
+        if isDisconnecting {
+            return await withCheckedContinuation { disconnectWaiters.append($0) }
+        }
+        isDisconnecting = true
+        authenticationGeneration += 1
+        activeAuthSession?.cancel()
+        activeAuthSession = nil
+
+        if isCoordinatorRunning {
+            await withCheckedContinuation { coordinatorIdleWaiters.append($0) }
+        }
+        isSyncing = true
+        preferences.needsGoogleOAuthChannelSweep = true
+        var removed = 0
+        var failed = 0
+        var detail: String?
+        do {
+            let occurrences = try Self.fetchOccurrencesForCalendarSync(
+                context: context, today: referenceDate, calendar: calendar
+            )
+            let cleaned = try await pushAndMergeOccurrencesToGoogleAPI(
+                occurrences: occurrences,
+                busyIntervalsByDay: [:],
+                preferences: preferences,
+                today: referenceDate,
+                allowSlotChangingWrites: false,
+                cleanupOnly: true,
+                calendar: calendar
+            )
+            removed = cleaned.removed
+            failed = cleaned.failed
+            preferences.needsGoogleOAuthChannelSweep = failed > 0
+                || occurrences.contains(where: { $0.googleCalendarEventId != nil })
+                || !preferences.pendingGoogleDeletions.isEmpty
+        } catch {
+            failed = 1
+            detail = error.localizedDescription
+        }
+
+        let cleanupPending = preferences.needsGoogleOAuthChannelSweep
+        signOut()
+        try? context.save()
+        let message = cleanupPending
+            ? "Disconnected Google OAuth account; calendar cleanup is still pending.\(detail.map { " \($0)" } ?? "")"
+            : "Disconnected Google OAuth account."
+        lastSyncStatusMessage = message
+        let report = CalendarSyncReport(
+            mergedBusyByDay: [:], upsertedCount: 0, removedCount: removed,
+            failedCount: failed, statusMessage: message
+        )
+        isSyncing = false
+        isDisconnecting = false
+        let waiters = disconnectWaiters
+        disconnectWaiters.removeAll()
+        for waiter in waiters { waiter.resume(returning: report) }
+        return report
+    }
+
     func signInWithGoogle(clientID rawClientID: String) async throws {
+        guard !isDisconnecting else { throw GoogleCalendarError.authenticationCancelled }
+        authenticationGeneration += 1
+        let generation = authenticationGeneration
+        activeAuthSession?.cancel()
+        activeAuthSession = nil
+        defer {
+            if generation == authenticationGeneration { activeAuthSession = nil }
+        }
         let clientID = rawClientID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clientID.isEmpty else {
             throw GoogleCalendarError.missingClientID
@@ -275,7 +363,9 @@ final class GoogleCalendarService {
                 continuation.resume(throwing: GoogleCalendarError.invalidAuthURL)
             }
         }
-        activeAuthSession = nil
+        guard generation == authenticationGeneration, !isDisconnecting else {
+            throw GoogleCalendarError.authenticationCancelled
+        }
 
         let callbackItems = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
         guard let code = callbackItems.first(where: { $0.name == "code" })?.value, !code.isEmpty else {
@@ -298,6 +388,9 @@ final class GoogleCalendarService {
             }
         }
 
+        guard generation == authenticationGeneration, !isDisconnecting else {
+            throw GoogleCalendarError.authenticationCancelled
+        }
         self.token = exchangedToken
         if persistTokensToKeychain {
             _ = KeychainHelper.saveCodable(exchangedToken, account: Self.tokenKeychainAccount)
@@ -313,10 +406,11 @@ final class GoogleCalendarService {
         context: ModelContext,
         today referenceDate: Date,
         calendar: Calendar = DateHelpers.calendar
-    ) -> [TaskOccurrence] {
+    ) throws -> [TaskOccurrence] {
         let today = DateHelpers.startOfDay(for: referenceDate, calendar: calendar)
         let lowerBound = DateHelpers.addDays(-3, to: today, calendar: calendar)
         let upperBound = DateHelpers.addDays(16, to: today, calendar: calendar)
+        let missingBonusDate = Date.distantPast
 
         let windowDescriptor = FetchDescriptor<TaskOccurrence>(
             predicate: #Predicate<TaskOccurrence> { occ in
@@ -325,7 +419,8 @@ final class GoogleCalendarService {
         )
         let bonusDescriptor = FetchDescriptor<TaskOccurrence>(
             predicate: #Predicate<TaskOccurrence> { occ in
-                occ.bonusForDate != nil
+                (occ.bonusForDate ?? missingBonusDate) >= lowerBound
+                    && (occ.bonusForDate ?? missingBonusDate) <= upperBound
             }
         )
         let googleTrackedDescriptor = FetchDescriptor<TaskOccurrence>(
@@ -346,10 +441,8 @@ final class GoogleCalendarService {
 
         var mergedByID: [UUID: TaskOccurrence] = [:]
         for desc in [windowDescriptor, bonusDescriptor, googleTrackedDescriptor, bridgeTrackedDescriptor, appleTrackedDescriptor] {
-            if let rows = try? context.fetch(desc) {
-                for row in rows {
-                    mergedByID[row.id] = row
-                }
+            for row in try context.fetch(desc) {
+                mergedByID[row.id] = row
             }
         }
         return Array(mergedByID.values)
@@ -407,6 +500,12 @@ final class GoogleCalendarService {
         calendar: Calendar,
         includeRebalance: Bool
     ) async -> CalendarSyncReport {
+        guard !isDisconnecting else {
+            return CalendarSyncReport(
+                mergedBusyByDay: [:], upsertedCount: 0, removedCount: 0,
+                statusMessage: "Calendar sync deferred while disconnecting Google."
+            )
+        }
         if isCoordinatorRunning {
             // Coalesce into a single follow-up pass (upgrading `includeRebalance` if any caller requested rebalance)
             if var existing = pendingQueuedRequest {
@@ -438,7 +537,7 @@ final class GoogleCalendarService {
         )
 
         // Drain any coalesced requests that arrived while `executeSingleSyncPass` was suspended at `await` points
-        while let next = pendingQueuedRequest {
+        while !isDisconnecting, let next = pendingQueuedRequest {
             pendingQueuedRequest = nil
             let batchWaiters = queuedWaiters
             queuedWaiters.removeAll()
@@ -458,6 +557,15 @@ final class GoogleCalendarService {
 
         isSyncing = false
         isCoordinatorRunning = false
+        if isDisconnecting {
+            pendingQueuedRequest = nil
+            let waiters = queuedWaiters
+            queuedWaiters.removeAll()
+            for waiter in waiters { waiter.resume(returning: latestReport) }
+        }
+        let idleWaiters = coordinatorIdleWaiters
+        coordinatorIdleWaiters.removeAll()
+        for waiter in idleWaiters { waiter.resume() }
         return latestReport
     }
 
@@ -476,7 +584,6 @@ final class GoogleCalendarService {
         let readResult = await collectMergedBusyIntervals(
             from: today,
             to: horizonEnd,
-            now: referenceDate,
             preferences: preferences,
             calendar: calendar
         )
@@ -508,15 +615,16 @@ final class GoogleCalendarService {
         statusParts.append(contentsOf: pushResult.statusParts)
 
         if includeRebalance && performNotificationSync {
+            let notificationNow = now()
             let digestOccurrences = NotificationManager.fetchOccurrencesForSummarySync(
                 context: context,
-                now: referenceDate,
+                now: notificationNow,
                 calendar: calendar
             )
             await NotificationManager.shared.syncSummaryNotifications(
                 preferences: preferences,
                 occurrences: digestOccurrences,
-                now: referenceDate,
+                now: notificationNow,
                 calendar: calendar
             )
         }
@@ -531,7 +639,7 @@ final class GoogleCalendarService {
             : statusParts.joined(separator: " · ")
 
         if preferences.hasAnyCalendarIntegrationEnabled || !includeRebalance {
-            lastSyncedAt = Date()
+            lastSyncedAt = now()
             lastSyncStatusMessage = summaryText
         }
 
@@ -542,6 +650,7 @@ final class GoogleCalendarService {
             failedCount: pushResult.failedCount,
             deferredCount: pushResult.deferredCount,
             usedCachedBusySnapshot: readResult.usedCachedSnapshot,
+            busyReadSucceeded: !readResult.hasUnavailableBusySource && !readResult.usedCachedSnapshot,
             statusMessage: summaryText
         )
     }
@@ -549,7 +658,6 @@ final class GoogleCalendarService {
     private func collectMergedBusyIntervals(
         from today: Date,
         to horizonEnd: Date,
-        now referenceNow: Date,
         preferences: CozyPreferences,
         calendar: Calendar
     ) async -> (
@@ -602,7 +710,7 @@ final class GoogleCalendarService {
                     // Persist complete start/end busy intervals keyed by destination + freshness timestamp
                     preferences.cachedGoogleBusySnapshot = CozyPreferences.CachedGoogleBusySnapshot.make(
                         destinationKey: destinationKey,
-                        fetchedAt: referenceNow,
+                        fetchedAt: now(),
                         intervalsByDay: googleIntervals,
                         calendar: calendar
                     )
@@ -613,7 +721,7 @@ final class GoogleCalendarService {
                     if let cachedIntervals = preferences.cachedGoogleBusySnapshot?.freshIntervalsByDay(
                         forDestination: destinationKey,
                         maxAgeSeconds: maxCachedBusySnapshotAgeSeconds,
-                        now: referenceNow,
+                        now: now(),
                         calendar: calendar
                     ) {
                         let clippedToHorizon = cachedIntervals.filter { $0.key >= today && $0.key <= horizonEnd }
@@ -677,11 +785,14 @@ final class GoogleCalendarService {
         var totalDeferred = 0
         var statusParts: [String] = []
 
-        let latestOccurrences = Self.fetchOccurrencesForCalendarSync(
-            context: context,
-            today: today,
-            calendar: calendar
-        )
+        let latestOccurrences: [TaskOccurrence]
+        do {
+            latestOccurrences = try Self.fetchOccurrencesForCalendarSync(
+                context: context, today: today, calendar: calendar
+            )
+        } catch {
+            return (0, 0, 1, 0, ["Calendar sync stopped because local tasks could not be read: \(error.localizedDescription)"])
+        }
         var googleBridgeCalendarID: String? = nil
 
         // 0A. Clean up inactive Google Bridge channel if user switched to OAuth REST or turned Google push OFF
@@ -736,9 +847,6 @@ final class GoogleCalendarService {
                 // OAuth credentials are no longer present; if Google Bridge is active on the same Google account,
                 // sweep stranded `.googleOAuth` events via EventKit and clear stale OAuth metadata upon commit.
                 shouldSweepStrandedOAuthViaBridge = googleBridgeActive
-                if !googleBridgeActive {
-                    preferences.needsGoogleOAuthChannelSweep = false
-                }
             }
         }
 
@@ -784,15 +892,10 @@ final class GoogleCalendarService {
                     sweepStrandedOAuthEvents: shouldSweepStrandedOAuthViaBridge,
                     calendar: calendar
                 )
-                if shouldSweepStrandedOAuthViaBridge && pushed.failed == 0 && pushed.errorMessage == nil {
-                    preferences.needsGoogleOAuthChannelSweep = false
-                    for occ in latestOccurrences where occ.googleCalendarEventId != nil {
-                        occ.googleCalendarEventId = nil
-                        occ.googleSyncedDestination = nil
-                        if occ.lastCalendarSyncSignature?.hasPrefix("google-oauth|") == true {
-                            occ.lastCalendarSyncSignature = nil
-                        }
-                    }
+                if shouldSweepStrandedOAuthViaBridge {
+                    // EventKit IDs cannot establish which REST account/calendar mapping was removed.
+                    // Retain links and retry intent until authenticated REST cleanup confirms each deletion.
+                    preferences.needsGoogleOAuthChannelSweep = true
                 }
                 totalUpserted += pushed.upserted
                 totalRemoved += pushed.removed
@@ -933,11 +1036,9 @@ final class GoogleCalendarService {
             for occ in occurrences {
                 if let oldDest = occ.googleSyncedDestination, oldDest != destinationKey {
                     if let oldID = occ.googleCalendarEventId,
-                       let parsedOld = CozyPreferences.parseGoogleDestination(oldDest),
-                       parsedOld.accountKey == accountIdentity,
-                       parsedOld.calendarID != calID {
+                       let parsedOld = CozyPreferences.parseGoogleDestination(oldDest) {
                         preferences.enqueueGoogleDeletion(
-                            .init(accountKey: accountIdentity, calendarID: parsedOld.calendarID, eventID: oldID)
+                            .init(accountKey: parsedOld.accountKey, calendarID: parsedOld.calendarID, eventID: oldID)
                         )
                     }
                     occ.googleCalendarEventId = nil
@@ -982,7 +1083,7 @@ final class GoogleCalendarService {
         } else {
             activeWindowOccurrences = occurrences
                 .filter { occ in
-                    guard occ.status != .skipped else { return false }
+                    guard occ.status != .skipped && occ.status != .missed else { return false }
                     let day = effectiveOccurrenceDay(occ)
                     return day >= minSyncDay && day <= maxSyncDay
                 }
@@ -1316,13 +1417,16 @@ final class GoogleCalendarService {
                 accumulated.append(contentsOf: pageItems)
             }
 
-            if let next = decoded.nextPageToken, !next.isEmpty, !seenTokens.contains(next) {
+            if let next = decoded.nextPageToken, !next.isEmpty {
+                guard !seenTokens.contains(next), pageCount < Self.maxPaginationPages else {
+                    throw GoogleCalendarError.apiError(-1, "Incomplete calendar listing; pagination did not finish safely")
+                }
                 seenTokens.insert(next)
                 nextPageToken = next
             } else {
                 nextPageToken = nil
             }
-        } while nextPageToken != nil && pageCount < Self.maxPaginationPages
+        } while nextPageToken != nil
 
         return accumulated
     }
@@ -1333,7 +1437,7 @@ final class GoogleCalendarService {
         guard var current = token else {
             throw GoogleCalendarError.notSignedIn
         }
-        if !current.isExpiredOrNearExpiry {
+        if now().addingTimeInterval(60) < current.expiresAt {
             return current.accessToken
         }
         guard let refreshToken = current.refreshToken, !refreshToken.isEmpty else {
@@ -1344,12 +1448,16 @@ final class GoogleCalendarService {
             throw GoogleCalendarError.missingClientID
         }
 
+        let generation = authenticationGeneration
         let refreshed = try await refreshAccessToken(
             refreshToken: refreshToken,
             clientID: clientID,
             existingSummary: current.accountSummary,
             existingAccountKey: current.accountKey
         )
+        guard generation == authenticationGeneration else {
+            throw GoogleCalendarError.notSignedIn
+        }
         current = refreshed
         self.token = refreshed
         if persistTokensToKeychain {
@@ -1395,7 +1503,7 @@ final class GoogleCalendarService {
         return GoogleOAuthToken(
             accessToken: decoded.access_token,
             refreshToken: decoded.refresh_token,
-            expiresAt: Date().addingTimeInterval(ttl),
+            expiresAt: now().addingTimeInterval(ttl),
             accountSummary: nil,
             accountKey: UUID().uuidString.lowercased()
         )
@@ -1436,7 +1544,7 @@ final class GoogleCalendarService {
         return GoogleOAuthToken(
             accessToken: decoded.access_token,
             refreshToken: decoded.refresh_token ?? refreshToken,
-            expiresAt: Date().addingTimeInterval(ttl),
+            expiresAt: now().addingTimeInterval(ttl),
             accountSummary: existingSummary,
             accountKey: existingAccountKey
         )
