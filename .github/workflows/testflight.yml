@@ -37,15 +37,34 @@ concurrency:
 jobs:
   deploy-testflight:
     name: Archive, Cloud-Sign IPA & Upload to TestFlight (Option A)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+      - name: Select Xcode 26+ & Show Version
+        run: |
+          set -euo pipefail
+          LATEST_XCODE_26=$(ls -d /Applications/Xcode_26*.app/Contents/Developer 2>/dev/null | grep -v -i beta | sort -V | tail -n 1 || true)
+          if [[ -n "${LATEST_XCODE_26}" && -d "${LATEST_XCODE_26}" ]]; then
+            DEV_DIR="${LATEST_XCODE_26}"
+          else
+            DEV_DIR="/Applications/Xcode.app/Contents/Developer"
+          fi
+          export DEVELOPER_DIR="${DEV_DIR}"
+          echo "DEVELOPER_DIR=${DEV_DIR}" >> "$GITHUB_ENV"
+          xcodebuild -version | tee "$RUNNER_TEMP/xcode-version.txt"
+          python3 - "$RUNNER_TEMP/xcode-version.txt" <<'PY'
+          import pathlib, re, sys
+          text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+          match = re.search(r"^Xcode (\d+)\.", text, re.MULTILINE)
+          if not match or int(match.group(1)) < 26:
+              raise SystemExit(f"App Store Connect requires Xcode 26+ (iOS 26 SDK), got:\n{text}")
+          PY
+          echo "Selected DEVELOPER_DIR=${DEV_DIR}"
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
 
       - name: Validate Option A Secrets & Resolve Version Configuration
         id: config
@@ -93,7 +112,7 @@ jobs:
                 echo "- \`${item}\`"
               done
               echo ""
-              echo "> Your App Store Connect API Key must have **Admin** or **App Manager** access so Xcode Cloud-Managed Signing can create/fetch the Apple Distribution certificate and App Store provisioning profile automatically."
+              echo "> Your App Store Connect Team API Key must have **Admin** access so Xcode Cloud-Managed Signing can use Apple's Cloud-Managed Distribution Certificate and App Store provisioning profile automatically."
             } >> "$GITHUB_STEP_SUMMARY"
             printf '::error::Missing required GitHub Actions secrets for Option A Cloud-Managed Signing: %s\n' "${MISSING[*]}"
             exit 1

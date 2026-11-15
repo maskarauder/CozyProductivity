@@ -14,15 +14,26 @@ concurrency:
 jobs:
   build-and-test:
     name: Build & Run Unit Tests (iOS Simulator)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+      - name: Select Xcode 26+ & Show Version
+        run: |
+          set -euo pipefail
+          LATEST_XCODE_26=$(ls -d /Applications/Xcode_26*.app/Contents/Developer 2>/dev/null | grep -v -i beta | sort -V | tail -n 1 || true)
+          if [[ -n "${LATEST_XCODE_26}" && -d "${LATEST_XCODE_26}" ]]; then
+            DEV_DIR="${LATEST_XCODE_26}"
+          else
+            DEV_DIR="/Applications/Xcode.app/Contents/Developer"
+          fi
+          export DEVELOPER_DIR="${DEV_DIR}"
+          echo "DEVELOPER_DIR=${DEV_DIR}" >> "$GITHUB_ENV"
+          xcodebuild -version
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
 
       - name: Resolve available iPhone Simulator UDID
         id: simulator
