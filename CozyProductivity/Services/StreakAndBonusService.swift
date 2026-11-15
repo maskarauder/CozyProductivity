@@ -82,6 +82,7 @@ enum StreakAndBonusService {
         var bonusDoneByDay: [Date: Int] = [:]
         var allTrackedDays: Set<Date> = []
 
+        // Missed commitments remain in the denominator; only deliberate skips are neutral.
         for occ in occurrences where occ.status != .skipped {
             if let bDay = occ.bonusDay(calendar: calendar) {
                 if occ.isCompleted {
@@ -376,7 +377,7 @@ enum StreakAndBonusService {
 
         if bonusEnabled {
             let baseToday = occurrences.filter {
-                $0.status != .skipped
+                $0.status.isScheduled
                     && $0.bonusDay(calendar: calendar) == nil
                     && DateHelpers.isSameDay($0.scheduledDay(calendar: calendar), today, calendar: calendar)
             }
@@ -392,7 +393,7 @@ enum StreakAndBonusService {
             } else {
                 for slot in [1, 2] {
                     let existingInSlot = occurrences.first {
-                        $0.status != .skipped
+                        $0.status.isScheduled
                             && $0.bonusSlot == slot
                             && ($0.bonusDay(calendar: calendar).map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false)
                     }
@@ -400,7 +401,7 @@ enum StreakAndBonusService {
 
                     let otherSlot = slot == 1 ? 2 : 1
                     let otherTemplateID = occurrences.first {
-                        $0.status != .skipped
+                        $0.status.isScheduled
                             && $0.bonusSlot == otherSlot
                             && ($0.bonusDay(calendar: calendar).map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false)
                     }?.template?.id

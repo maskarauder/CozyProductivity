@@ -771,12 +771,12 @@ struct ReadTodaysChecklistIntent: AppIntent {
             )
 
             let baseToday = occurrences.filter {
-                $0.status != .skipped && $0.bonusDay() == nil && DateHelpers.isSameDay($0.scheduledDay(), today)
+                $0.status.isScheduled && $0.bonusDay() == nil && DateHelpers.isSameDay($0.scheduledDay(), today)
             }
             let pendingBase = baseToday.filter { !$0.isCompleted }
             let bonusToday = prefs.optionalBonusTasksEnabled
                 ? occurrences
-                    .filter { $0.status != .skipped && ($0.bonusDay().map { DateHelpers.isSameDay($0, today) } ?? false) }
+                    .filter { $0.status.isScheduled && ($0.bonusDay().map { DateHelpers.isSameDay($0, today) } ?? false) }
                     .sorted { $0.bonusSlot < $1.bonusSlot }
                 : []
             let pendingBonus = bonusToday.filter { !$0.isCompleted }

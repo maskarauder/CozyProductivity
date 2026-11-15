@@ -140,7 +140,7 @@ final class SmartSchedulerTests: XCTestCase {
         XCTAssertEqual(occ?.scheduledDate, sunday)
     }
 
-    func testMissedDailySkipsCleanlyWhileUnfinishedOnceTaskRedistributes() throws {
+    func testMissedDailyRetiresCleanlyWhileUnfinishedOnceTaskRedistributes() throws {
         let monday = makeDate(year: 2026, month: 11, day: 9)
         let tuesday = makeDate(year: 2026, month: 11, day: 10)
         let wednesday = makeDate(year: 2026, month: 11, day: 11)
@@ -197,11 +197,11 @@ final class SmartSchedulerTests: XCTestCase {
 
         let occurrences = try context.fetch(FetchDescriptor<TaskOccurrence>())
 
-        // 1. Monday's missed daily stretch must be marked .skipped
+        // 1. Monday's missed daily stretch remains an incomplete historical commitment
         let mondayStretch = occurrences.first {
             $0.template?.id == dailyStretch.id && $0.scheduledDate == monday
         }
-        XCTAssertEqual(mondayStretch?.status, .skipped)
+        XCTAssertEqual(mondayStretch?.status, .missed)
 
         // 2. Tuesday should have ONLY ONE pending daily stretch (no pile-up!)
         let tuesdayStretches = occurrences.filter {
@@ -1204,12 +1204,12 @@ final class SmartSchedulerTests: XCTestCase {
         let pendingOnThursday = occs.filter {
             $0.status == .pending && $0.scheduledDay(calendar: testCalendar) == thursday
         }
-        let skippedPastDays = occs.filter {
-            $0.status == .skipped && $0.scheduledDay(calendar: testCalendar) < thursday
+        let missedPastDays = occs.filter {
+            $0.status == .missed && $0.scheduledDay(calendar: testCalendar) < thursday
         }
 
         XCTAssertEqual(pendingOnThursday.count, 1)
-        XCTAssertEqual(skippedPastDays.count, 3)
+        XCTAssertEqual(missedPastDays.count, 3)
     }
 
     func testEditingOrDeletingTemplatePreservesCompletedTaskHistoryAndQueuesRemoteDeletions() throws {
@@ -1604,6 +1604,7 @@ final class SmartSchedulerTests: XCTestCase {
     func testGoogleBusyReadFailureDefersSlotWritesWhilePreservingCompletionAndFreshIntervalCache() async throws {
         let today = makeDate(year: 2026, month: 11, day: 14) // Saturday
         let refNow = today.addingTimeInterval(10 * 3600)
+        var testClock = refNow
 
         let prefs = CozyPreferences(
             useGoogleCalendarSync: true,
@@ -1769,7 +1770,8 @@ final class SmartSchedulerTests: XCTestCase {
             },
             initialToken: testToken,
             freeTimeService: ekService,
-            persistTokensToKeychain: false
+            persistTokensToKeychain: false,
+            now: { testClock }
         )
 
         // Part A: Busy read fails (503) with NO cached snapshot -> new slot write is DEFERRED (never placed over 18:00 meeting!),
@@ -1777,7 +1779,7 @@ final class SmartSchedulerTests: XCTestCase {
         let degradedReport = await googleService.pushOccurrenceChangesWithoutRebalance(
             context: context,
             preferences: prefs,
-            referenceDate: refNow,
+            referenceDate: today,
             calendar: testCalendar
         )
         XCTAssertEqual(createdPayloads.count, 0)
@@ -1801,7 +1803,7 @@ final class SmartSchedulerTests: XCTestCase {
         let healthyReport = await googleService.syncCalendarsAndRebalance(
             context: context,
             preferences: prefs,
-            referenceDate: refNow,
+            referenceDate: today,
             calendar: testCalendar
         )
         XCTAssertEqual(healthyReport.deferredCount, 0)
@@ -1832,10 +1834,11 @@ final class SmartSchedulerTests: XCTestCase {
         context.insert(cachedOcc)
         try context.save()
 
+        testClock = refNow.addingTimeInterval(300)
         let freshFallbackReport = await googleService.syncCalendarsAndRebalance(
             context: context,
             preferences: prefs,
-            referenceDate: refNow.addingTimeInterval(300), // 5 minutes later (fresh)
+            referenceDate: today, // Scheduling day stays fixed; the clock advances.
             calendar: testCalendar
         )
         XCTAssertTrue(freshFallbackReport.usedCachedBusySnapshot)
@@ -1866,10 +1869,11 @@ final class SmartSchedulerTests: XCTestCase {
         context.insert(staleOcc)
         try context.save()
 
+        testClock = refNow.addingTimeInterval(8 * 3600)
         let expiredReport = await googleService.syncCalendarsAndRebalance(
             context: context,
             preferences: prefs,
-            referenceDate: refNow.addingTimeInterval(8 * 3600), // 8 hours later (> 6h TTL)
+            referenceDate: today, // Same scheduling day, now beyond the cache TTL.
             calendar: testCalendar
         )
         XCTAssertFalse(expiredReport.usedCachedBusySnapshot)
@@ -2191,14 +2195,14 @@ final class SmartSchedulerTests: XCTestCase {
             )
             // Simulate an upgraded SQLite row from 8dde195 where snapshotSchemaVersion == 0,
             // scheduledDate was stored as 23:00 PDT (06:00 UTC next day!) with empty scheduledDayKey,
-            // and non-empty property defaults ("once"/"Once"/"selfCare") populated SQLite!
+            // and recurrence defaults populated SQLite while the category was absent.
             legacyWeeklyOcc.scheduledDate = lateEveningPDT
             legacyWeeklyOcc.scheduledDayKey = ""
             legacyWeeklyOcc.scheduledTimezoneID = ""
             legacyWeeklyOcc.snapshotSchemaVersion = 0
             legacyWeeklyOcc.recurrenceKindSnapshotRaw = "once"
             legacyWeeklyOcc.recurrenceLabelSnapshot = "Once"
-            legacyWeeklyOcc.categorySnapshotRaw = "selfCare"
+            legacyWeeklyOcc.categorySnapshotRaw = ""
             ctx1.insert(legacyWeeklyOcc)
             legacyWeeklyOccID = legacyWeeklyOcc.id
 
@@ -2521,7 +2525,7 @@ final class SmartSchedulerTests: XCTestCase {
         XCTAssertEqual(incrementalEval.totalBronzeOrPinkDays, fullScan.totalBronzeOrPinkDays)
 
         // Step 3: Scoped calendar sync & notification digest fetches exclude old unlinked history rows while keeping needed items
-        let syncCandidates = GoogleCalendarService.fetchOccurrencesForCalendarSync(
+        let syncCandidates = try GoogleCalendarService.fetchOccurrencesForCalendarSync(
             context: context,
             today: finalToday,
             calendar: testCalendar

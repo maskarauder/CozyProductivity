@@ -213,7 +213,7 @@ final class TaskOccurrence {
     }
 
     /// Upgrades pre-existing persistent store rows (from legacy releases or unmigrated schemas),
-    /// backfilling civil day keys and recovering exact recurrence/category/notes without overwriting frozen titles/durations.
+    /// Backfills recoverable civil days and missing metadata without replacing valid frozen history.
     func migrateLegacyRecordIfNeeded(calendar: Calendar = DateHelpers.calendar) {
         let occDay = normalizeCivilDates(in: calendar)
 
@@ -275,12 +275,13 @@ final class TaskOccurrence {
         }
 
         if let template {
-            if categorySnapshotRaw.isEmpty || snapshotSchemaVersion == 0 {
+            // Version 0 also identifies rows written by releases that already froze category and notes.
+            // A valid category (including selfCare) is not evidence of a missing snapshot.
+            if TaskCategory(rawValue: categorySnapshotRaw) == nil {
                 categorySnapshotRaw = template.category.rawValue
             }
-            if notesSnapshot.isEmpty {
-                notesSnapshot = template.notes
-            }
+            // Empty notes may be the accurate completion-time value. Their original absence cannot
+            // be distinguished from an empty snapshot, so do not copy a later template edit here.
         }
 
         snapshotSchemaVersion = Self.currentSnapshotSchemaVersion
@@ -358,6 +359,17 @@ final class TaskOccurrence {
 
     @discardableResult
     func normalizeCivilDates(in calendar: Calendar = DateHelpers.calendar) -> Date {
+        // Legacy daily rows have a recoverable civil date even when their original timezone was
+        // never stored. Recover it before interpreting the old midnight timestamp in a new zone.
+        // A manual pin can intentionally differ from the period date, so preserve that timestamp.
+        if scheduledDayKey.isEmpty, !isManuallyPinned, periodKey.hasPrefix("daily:") {
+            let recordedDayKey = String(periodKey.dropFirst("daily:".count))
+            if recordedDayKey.count == 10,
+               let recordedDay = DateHelpers.date(fromDayKey: recordedDayKey, calendar: calendar),
+               DateHelpers.dayKeyString(for: recordedDay, calendar: calendar) == recordedDayKey {
+                setScheduledDay(recordedDay, calendar: calendar)
+            }
+        }
         let resolvedSched = DateHelpers.resolveCivilDay(
             dayKey: scheduledDayKey,
             fallbackDate: scheduledDate,
@@ -456,10 +468,7 @@ final class TaskOccurrence {
         if status == .pending, let template {
             return template.notes
         }
-        if !notesSnapshot.isEmpty || snapshotSchemaVersion >= Self.currentSnapshotSchemaVersion {
-            return notesSnapshot
-        }
-        return template?.notes ?? ""
+        return notesSnapshot
     }
 
     var displayRecurrenceKind: RecurrenceKind {
@@ -487,8 +496,7 @@ final class TaskOccurrence {
            let frozen = TaskCategory(rawValue: categorySnapshotRaw) {
             return frozen
         }
-        if !categorySnapshotRaw.isEmpty, snapshotSchemaVersion > 0,
-           let frozen = TaskCategory(rawValue: categorySnapshotRaw) {
+        if let frozen = TaskCategory(rawValue: categorySnapshotRaw) {
             return frozen
         }
         if let template {

@@ -160,7 +160,7 @@ enum SmartScheduler {
                 continue
             }
 
-            // Refresh snapshots on pending items ONLY (completed/skipped history remains frozen!)
+            // Refresh snapshots on pending items only; completed/missed/skipped history remains frozen.
             if occ.status == .pending {
                 if !periodKeyMatchesRecurrence(occ.periodKey, recurrence: template.recurrence, intervalDays: template.customIntervalDays) {
                     deleteOccurrence(occ, context: context, preferences: preferences)
@@ -185,9 +185,8 @@ enum SmartScheduler {
                 switch template.recurrence {
                 case .daily:
                     if occDay < today || occ.periodKey < todayDailyKey {
-                        // Retire missed daily occurrences cleanly so expired deadlines never accumulate multiple copies onto Today
-                        occ.setBonusDay(nil, calendar: calendar)
-                        occ.status = .skipped
+                        // Retire the commitment without erasing it from that day's achievement total.
+                        markMissedOccurrence(occ, template: template, calendar: calendar)
                         survivingOccurrences.append(occ)
                     } else {
                         survivingOccurrences.append(occ)
@@ -203,9 +202,8 @@ enum SmartScheduler {
                 case .weekly, .biweekly, .monthly, .customDays:
                     let currentWindow = DateHelpers.periodWindow(for: template, containing: today, calendar: calendar)
                     if occ.periodKey < currentWindow.key {
-                        // Past recurrence period has ended; retire it so it never piles up alongside currentWindow.key
-                        occ.setBonusDay(nil, calendar: calendar)
-                        occ.status = .skipped
+                        // Preserve the expired commitment in history without adding it to the new period.
+                        markMissedOccurrence(occ, template: template, calendar: calendar)
                         survivingOccurrences.append(occ)
                     } else if occDay < today {
                         // Still inside currentWindow, just earlier in the week/month -> unpin to reschedule onto remaining days
@@ -411,7 +409,7 @@ enum SmartScheduler {
         }
 
         let baseTodayItems = occurrencesByTemplateAndPeriod.values.filter {
-            $0.status != .skipped
+            $0.status.isScheduled
                 && $0.bonusDay(calendar: calendar) == nil
                 && DateHelpers.isSameDay($0.scheduledDay(calendar: calendar), today, calendar: calendar)
         }
@@ -433,7 +431,7 @@ enum SmartScheduler {
                 let anchor = template.normalizedAnchorDate(calendar: calendar)
 
                 if let existing = occurrencesByTemplateAndPeriod[mapKey] {
-                    if existing.status == .completed || existing.status == .skipped || existing.isManuallyPinned {
+                    if existing.status != .pending || existing.isManuallyPinned {
                         continue
                     }
                     let isTodayBonus = existing.bonusDay(calendar: calendar).map { DateHelpers.isSameDay($0, today, calendar: calendar) } ?? false
@@ -794,7 +792,7 @@ enum SmartScheduler {
         var loadByDay: [Date: DayLoadAccumulator] = [:]
         loadByDay.reserveCapacity(dayCount)
 
-        for occ in occurrences where occ.status != .skipped {
+        for occ in occurrences where occ.status.isScheduled {
             let day = occ.isCompleted
                 ? (occ.bonusDay(calendar: calendar) ?? occ.scheduledDay(calendar: calendar))
                 : occ.scheduledDay(calendar: calendar)
@@ -925,6 +923,39 @@ enum SmartScheduler {
     }
 
     // MARK: - Internal Helpers
+
+    private static func markMissedOccurrence(
+        _ occurrence: TaskOccurrence,
+        template: TaskTemplate,
+        calendar: Calendar
+    ) {
+        // A zero-cup day can defer a weekly/monthly occurrence beyond its own period.
+        // Attribute the missed commitment to that period's last day, not to the new period.
+        let periodSuffix = occurrence.periodKey.split(separator: ":", maxSplits: 1).last.map(String.init) ?? ""
+        let startKey = template.recurrence == .monthly ? "\(periodSuffix)-01" : periodSuffix
+        if let periodStart = DateHelpers.date(fromDayKey: startKey, calendar: calendar) {
+            let periodEnd: Date
+            switch template.recurrence {
+            case .daily:
+                periodEnd = periodStart
+            case .weekly:
+                periodEnd = DateHelpers.addDays(6, to: periodStart, calendar: calendar)
+            case .biweekly:
+                periodEnd = DateHelpers.addDays(13, to: periodStart, calendar: calendar)
+            case .monthly:
+                periodEnd = DateHelpers.monthWindow(containing: periodStart, calendar: calendar).end
+            case .customDays:
+                periodEnd = DateHelpers.addDays(max(2, template.customIntervalDays) - 1, to: periodStart, calendar: calendar)
+            case .once:
+                periodEnd = occurrence.scheduledDay(calendar: calendar)
+            }
+            if occurrence.scheduledDay(calendar: calendar) > periodEnd {
+                occurrence.setScheduledDay(periodEnd, calendar: calendar)
+            }
+        }
+        occurrence.setBonusDay(nil, calendar: calendar)
+        occurrence.status = .missed
+    }
 
     private static func recordOccurrenceLoad(
         _ occ: TaskOccurrence,

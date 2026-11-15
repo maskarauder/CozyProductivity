@@ -33,74 +33,111 @@ enum CozyModelContainer {
 }
 
 @MainActor
+protocol CozyMigrationStore {
+    func fetchTemplates() throws -> [TaskTemplate]
+    func fetchOverrides() throws -> [DayCapacityOverride]
+    func fetchOccurrences(requiringVersion version: Int, limit: Int) throws -> [TaskOccurrence]
+    func save() throws
+}
+
+@MainActor
+private struct SwiftDataMigrationStore: CozyMigrationStore {
+    let context: ModelContext
+
+    func fetchTemplates() throws -> [TaskTemplate] {
+        try context.fetch(FetchDescriptor<TaskTemplate>())
+    }
+
+    func fetchOverrides() throws -> [DayCapacityOverride] {
+        try context.fetch(FetchDescriptor<DayCapacityOverride>())
+    }
+
+    func fetchOccurrences(requiringVersion version: Int, limit: Int) throws -> [TaskOccurrence] {
+        var descriptor = FetchDescriptor<TaskOccurrence>(
+            predicate: #Predicate<TaskOccurrence> { occ in
+                occ.snapshotSchemaVersion < version || occ.scheduledDayKey == ""
+            }
+        )
+        descriptor.fetchLimit = limit
+        return try context.fetch(descriptor)
+    }
+
+    func save() throws {
+        try context.save()
+    }
+}
+
+@MainActor
 enum CozyDataMigrator {
-    nonisolated static let currentVersion = 2
+    nonisolated static let currentVersion = 3
     private nonisolated static let batchSize = 400
 
-    /// Performs an idempotent, batched persistent-store upgrade across all legacy templates, overrides, and occurrences.
-    /// Backfills civil `"YYYY-MM-DD"` day keys across all historical records and upgrades occurrence snapshots without mislabeling completed history.
+    private enum MigrationError: Error {
+        case noProgress
+    }
+
+    /// Returns true only after every required batch and the completion marker have been saved.
+    /// A failed read/write leaves the marker unchanged so a later invocation can retry.
+    @discardableResult
     static func migrateIfNeeded(
         context: ModelContext,
         preferences: CozyPreferences,
         calendar: Calendar = DateHelpers.calendar
-    ) {
-        guard preferences.appliedDataMigrationVersion < currentVersion else { return }
+    ) -> Bool {
+        migrateIfNeeded(
+            store: SwiftDataMigrationStore(context: context),
+            preferences: preferences,
+            calendar: calendar
+        )
+    }
 
-        let templates = (try? context.fetch(FetchDescriptor<TaskTemplate>())) ?? []
-        for template in templates {
-            template.normalizeCivilDates(in: calendar)
-        }
+    @discardableResult
+    static func migrateIfNeeded(
+        store: any CozyMigrationStore,
+        preferences: CozyPreferences,
+        calendar: Calendar = DateHelpers.calendar
+    ) -> Bool {
+        guard preferences.appliedDataMigrationVersion < currentVersion else { return true }
+        let previousVersion = preferences.appliedDataMigrationVersion
 
-        let overrides = (try? context.fetch(FetchDescriptor<DayCapacityOverride>())) ?? []
-        for item in overrides {
-            item.normalizeCivilDates(in: calendar)
-        }
-
-        let targetSchema = TaskOccurrence.currentSnapshotSchemaVersion
-        var migratedAnyOccurrences = false
-        var safetyPasses = 0
-
-        while safetyPasses < 500 {
-            safetyPasses += 1
-            var descriptor = FetchDescriptor<TaskOccurrence>(
-                predicate: #Predicate<TaskOccurrence> { occ in
-                    occ.snapshotSchemaVersion < targetSchema || occ.scheduledDayKey == ""
-                }
-            )
-            descriptor.fetchLimit = batchSize
-
-            let batch = (try? context.fetch(descriptor)) ?? []
-            guard !batch.isEmpty else { break }
-
-            var progressedInBatch = false
-            for occ in batch {
-                let prevVersion = occ.snapshotSchemaVersion
-                let prevDayKey = occ.scheduledDayKey
-                occ.migrateLegacyRecordIfNeeded(calendar: calendar)
-                if occ.scheduledDayKey.isEmpty {
-                    let norm = DateHelpers.startOfDay(for: occ.scheduledDate, calendar: calendar)
-                    occ.scheduledDate = norm
-                    occ.scheduledDayKey = DateHelpers.dayKeyString(for: norm, calendar: calendar)
-                    occ.scheduledTimezoneID = calendar.timeZone.identifier
-                }
-                if occ.snapshotSchemaVersion != prevVersion || occ.scheduledDayKey != prevDayKey {
-                    progressedInBatch = true
-                    migratedAnyOccurrences = true
-                }
+        do {
+            for template in try store.fetchTemplates() {
+                template.normalizeCivilDates(in: calendar)
+            }
+            for item in try store.fetchOverrides() {
+                item.normalizeCivilDates(in: calendar)
             }
 
-            try? context.save()
-            if !progressedInBatch {
-                break
+            let targetSchema = TaskOccurrence.currentSnapshotSchemaVersion
+            while true {
+                let batch = try store.fetchOccurrences(requiringVersion: targetSchema, limit: batchSize)
+                if batch.isEmpty {
+                    preferences.appliedDataMigrationVersion = currentVersion
+                    try store.save()
+                    return true
+                }
+
+                var progressedInBatch = false
+                for occ in batch {
+                    let previousSchema = occ.snapshotSchemaVersion
+                    let previousDayKey = occ.scheduledDayKey
+                    occ.migrateLegacyRecordIfNeeded(calendar: calendar)
+                    if occ.snapshotSchemaVersion != previousSchema || occ.scheduledDayKey != previousDayKey {
+                        progressedInBatch = true
+                    }
+                }
+                guard progressedInBatch else { throw MigrationError.noProgress }
+
+                // Save the invalidation with each completed batch. If a later batch fails, the
+                // next attempt can resume from persisted rows without trusting a stale archive.
+                preferences.historicalStreakArchive = nil
+                try store.save()
             }
+        } catch {
+            // In particular, undo an in-memory completion marker if its final save failed.
+            // Do not roll back the caller's unrelated edits or previously successful batches.
+            preferences.appliedDataMigrationVersion = previousVersion
+            return false
         }
-
-        if migratedAnyOccurrences {
-            // Force historical streak checkpoint to rebuild cleanly once using migrated civil day keys
-            preferences.historicalStreakArchive = nil
-        }
-
-        preferences.appliedDataMigrationVersion = currentVersion
-        try? context.save()
     }
 }
