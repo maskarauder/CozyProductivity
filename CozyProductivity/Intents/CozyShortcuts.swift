@@ -860,12 +860,12 @@ struct CheckCozyStreakIntent: AppIntent {
     }
 }
 
-// MARK: - 6. Sync Google & Apple Calendars + Balance Schedule Intent
+// MARK: - 6. Sync Connected Calendars + Balance Schedule Intent
 
 struct SyncAndRebalanceIntent: AppIntent {
     static var title: LocalizedStringResource = "Sync Calendars & Balance Tasks"
     static var description = IntentDescription(
-        "Reads busy blocks from Google Calendar and Apple Calendar, rebalances flexible tasks onto freer days, and pushes tasks to Google and/or Apple Calendars."
+        "Reads busy blocks from your connected calendars, rebalances flexible tasks onto freer days, and syncs scheduled tasks back to your calendar."
     )
     static var openAppWhenRun: Bool = false
 
@@ -947,7 +947,7 @@ struct CozyAppShortcutsProvider: AppShortcutsProvider {
             intent: SyncAndRebalanceIntent(),
             phrases: [
                 "Sync calendars in \(.applicationName)",
-                "Sync Google Calendar in \(.applicationName)",
+                "Sync my calendar in \(.applicationName)",
                 "Balance my \(.applicationName) schedule"
             ],
             shortTitle: "Sync & Balance",
