@@ -28,7 +28,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: testflight-${{ github.ref }}
@@ -631,6 +631,46 @@ jobs:
             --type ios \
             --apiKey "${ASC_KEY_ID}" \
             --apiIssuer "${ASC_ISSUER_ID}"
+
+      - name: Publish Signed IPA to GitHub Release (Tag Push)
+        if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          EXPORT_PATH: ${{ steps.export.outputs.export_path }}
+          MARKETING_VERSION: ${{ steps.config.outputs.marketing_version }}
+          BUILD_NUMBER: ${{ steps.asc_preflight.outputs.effective_build_number }}
+        run: |
+          set -euo pipefail
+          VERSION_SLUG="${RELEASE_TAG#v}"
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          IPA_DEST="$RUNNER_TEMP/release-assets/CozyProductivity-${VERSION_SLUG}.ipa"
+          cp "${EXPORT_PATH}"/*.ipa "${IPA_DEST}"
+          ASSETS=("${IPA_DEST}#Cozy Signed IPA (${RELEASE_TAG})")
+          DSYM_SRC=$(find "${EXPORT_PATH}" -name "*dSYMs*.zip" -type f | head -n 1 || true)
+          if [[ -n "${DSYM_SRC}" ]]; then
+            DSYM_DEST="$RUNNER_TEMP/release-assets/CozyProductivity-${VERSION_SLUG}-dSYMs.zip"
+            cp "${DSYM_SRC}" "${DSYM_DEST}"
+            ASSETS+=("${DSYM_DEST}#Debug Symbols (dSYMs)")
+          fi
+          PRERELEASE_FLAG=()
+          if [[ "${RELEASE_TAG}" == *"-"* ]]; then
+            PRERELEASE_FLAG=(--prerelease)
+          fi
+          TITLE="Cozy ${MARKETING_VERSION} (Build ${BUILD_NUMBER})"
+          if [[ "${#PRERELEASE_FLAG[@]}" -gt 0 ]]; then
+            TITLE="Cozy ${MARKETING_VERSION} Beta (Build ${BUILD_NUMBER})"
+          fi
+          if gh release view "${RELEASE_TAG}" -R "${REPO}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" -R "${REPO}" --clobber "${ASSETS[@]}"
+          else
+            gh release create "${RELEASE_TAG}" -R "${REPO}" \
+              --title "${TITLE}" \
+              --generate-notes \
+              "${PRERELEASE_FLAG[@]}" \
+              "${ASSETS[@]}"
+          fi
 
       - name: Write Deployment Summary
         if: success()

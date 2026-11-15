@@ -1,0 +1,139 @@
+name: Publish Signed IPA to GitHub Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Workflow run ID that produced the signed IPA artifact (e.g. 43665948801)"
+        required: true
+        type: string
+      release_tag:
+        description: "Git tag for the GitHub Release (e.g. v1.0-beta.5)"
+        required: true
+        type: string
+      release_title:
+        description: "Release title (e.g. Cozy 1.0 Beta (Build 5))"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark release as a pre-release (Beta)"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish-release:
+    name: Attach Signed IPA & dSYMs to GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download Signed IPA Artifact & Publish Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TITLE: ${{ inputs.release_title }}
+          IS_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          TARGET_SHA=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" --jq '.head_sha')
+          if [[ -z "${TARGET_SHA}" || "${TARGET_SHA}" == "null" ]]; then
+            echo "::error::Could not resolve head_sha for workflow run ${RUN_ID}"
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/artifact" "$RUNNER_TEMP/assets"
+          gh run download "${RUN_ID}" -R "${REPO}" --dir "$RUNNER_TEMP/artifact"
+
+          IPA_SRC=$(find "$RUNNER_TEMP/artifact" -name "*.ipa" -type f | head -n 1)
+          DSYM_SRC=$(find "$RUNNER_TEMP/artifact" -name "*dSYMs*.zip" -type f | head -n 1 || true)
+          PLIST_SRC=$(find "$RUNNER_TEMP/artifact" -name "DistributionSummary.plist" -type f | head -n 1 || true)
+
+          if [[ -z "${IPA_SRC}" ]]; then
+            echo "::error::No .ipa file found in workflow run ${RUN_ID} artifacts"
+            exit 1
+          fi
+
+          VERSION_SLUG="${RELEASE_TAG#v}"
+          IPA_DEST="$RUNNER_TEMP/assets/CozyProductivity-${VERSION_SLUG}.ipa"
+          cp "${IPA_SRC}" "${IPA_DEST}"
+
+          ASSETS=("${IPA_DEST}#Cozy Signed IPA (${RELEASE_TAG})")
+          if [[ -n "${DSYM_SRC}" ]]; then
+            DSYM_DEST="$RUNNER_TEMP/assets/CozyProductivity-${VERSION_SLUG}-dSYMs.zip"
+            cp "${DSYM_SRC}" "${DSYM_DEST}"
+            ASSETS+=("${DSYM_DEST}#Debug Symbols (dSYMs)")
+          fi
+
+          read -r MARKETING_VERSION BUILD_NUMBER < <(python3 - "${PLIST_SRC:-}" <<'PY'
+          import pathlib, plistlib, sys
+          p = sys.argv[1]
+          if p and pathlib.Path(p).is_file():
+              data = plistlib.loads(pathlib.Path(p).read_bytes())
+              items = next(iter(data.values()), [{}])
+              first = items[0] if items else {}
+              print(first.get("versionNumber", "1.0"), first.get("buildNumber", "unknown"))
+          else:
+              print("1.0", "unknown")
+          PY
+          )
+
+          OWNER="${REPO%%/*}"
+          REPO_NAME="${REPO##*/}"
+
+          cat <<EOF > "$RUNNER_TEMP/RELEASE_NOTES.md"
+          ## ${RELEASE_TITLE} 🌸
+
+          Cloud-signed TestFlight Beta build of **Cozy** — a calm, pastel-pink iPhone task tracker built natively with **SwiftUI**, **SwiftData**, **AppIntents**, **EventKit**, **AuthenticationServices**, and **UserNotifications**.
+
+          - 🌐 **Live Interactive HTML Demo:** [https://${OWNER}.github.io/${REPO_NAME}/](https://${OWNER}.github.io/${REPO_NAME}/)
+
+          ### Highlights
+          - **ADD Friendly Mode**: Optional low-text focus mode in **Settings** that strips away subtitles, emojis, categories, and extra copy (including an hours-only \`0–5h\` Morning Cup check-in).
+          - **Optional Gamification (4 Independent Settings)**: Individually toggle **Streaks**, **Optional Bonus Tasks** (defaults completed days to **Gold** when disabled), **Day Ranks (\`Bronze\`, \`Silver\`, \`Gold\`)**, and **Confetti**.
+          - **Effortless Task Capture & Smart Rebalancing**: Defaults to **Light (\`+0m\`)**, **30-minute**, **Once** tasks with editable weights (**Light**, **Normal**, **Heavy**) and optional **Hard Deadlines**.
+          - **Morning Cup Check-In (\`4:00 AM\` Reset)**: Daily \`0–5\` hour capacity check-in that gently rebalances flexible tasks onto freer days.
+          - **Native Siri & Shortcuts (\`AppIntents\`)**: Natural voice capture (*"Hey Siri, add a heavy 1-hour Cozy task to take out the trash"*), daily summaries, cup updates, streak checks, and calendar sync.
+          - **Google & Apple Calendar Auto-Sync**: Coordinated, idempotent sync with pagination, busy-interval conflict protection, retry-safe deletion queues, and persistent store upgrade migrations.
+
+          ### Build & Signing Details
+          - **Version / Build:** \`${MARKETING_VERSION}\` (\`Build ${BUILD_NUMBER}\`)
+          - **Bundle Identifier:** \`com.cozyproductivity.cozy\`
+          - **Toolchain:** Xcode \`26.6\` (\`iOS SDK 26.5\`, \`arm64\`)
+          - **Source Commit:** \`${TARGET_SHA}\` ([TestFlight Build Run #${RUN_ID}](https://github.com/${REPO}/actions/runs/${RUN_ID}))
+          - **Code Signing:** Cloud Managed Apple Distribution (\`iOS Team Store Provisioning Profile\`, \`beta-reports-active: true\`)
+
+          > **Note on Installing the \`.ipa\`:** \`CozyProductivity-${VERSION_SLUG}.ipa\` is signed with an **App Store / TestFlight Distribution** provisioning profile (matching the build live in TestFlight Beta). Beta testers should install via **TestFlight**; installing the \`.ipa\` directly outside TestFlight requires re-signing with a Development or Ad Hoc profile.
+          EOF
+          sed -i 's/^          //' "$RUNNER_TEMP/RELEASE_NOTES.md"
+
+          PRERELEASE_FLAG=()
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            PRERELEASE_FLAG=(--prerelease)
+          fi
+
+          if gh release view "${RELEASE_TAG}" -R "${REPO}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" -R "${REPO}" \
+              --title "${RELEASE_TITLE}" \
+              --notes-file "$RUNNER_TEMP/RELEASE_NOTES.md" \
+              "${PRERELEASE_FLAG[@]}"
+            gh release upload "${RELEASE_TAG}" -R "${REPO}" --clobber "${ASSETS[@]}"
+          else
+            gh release create "${RELEASE_TAG}" -R "${REPO}" \
+              --target "${TARGET_SHA}" \
+              --title "${RELEASE_TITLE}" \
+              --notes-file "$RUNNER_TEMP/RELEASE_NOTES.md" \
+              "${PRERELEASE_FLAG[@]}" \
+              "${ASSETS[@]}"
+          fi
+
+          RELEASE_URL=$(gh release view "${RELEASE_TAG}" -R "${REPO}" --json url --jq '.url')
+          echo "Published GitHub Release: ${RELEASE_URL}"
+          echo "### Published GitHub Release: [${RELEASE_TITLE}](${RELEASE_URL})" >> "$GITHUB_STEP_SUMMARY"
