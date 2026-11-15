@@ -2604,8 +2604,11 @@ final class SmartSchedulerTests: XCTestCase {
             calendar: testCalendar
         )
 
+        let currentWeekKey = DateHelpers.weekWindow(containing: monday, calendar: testCalendar).key
         let all = try context.fetch(FetchDescriptor<TaskOccurrence>())
-        let flexOcc = try XCTUnwrap(all.first(where: { $0.template?.id == flexibleTemplate.id }))
+        let flexOcc = try XCTUnwrap(
+            all.first(where: { $0.template?.id == flexibleTemplate.id && $0.periodKey == currentWeekKey })
+        )
 
         XCTAssertEqual(pinnedUrgentOcc.scheduledDay(calendar: testCalendar), monday)
         XCTAssertEqual(
